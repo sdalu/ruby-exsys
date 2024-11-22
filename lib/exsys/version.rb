@@ -1,3 +1,3 @@
 module ExSYS
-    VERSION = 0.5
+    VERSION = 0.5  # Version
 end
