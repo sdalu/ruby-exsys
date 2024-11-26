@@ -1,0 +1,78 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'exsys'
+require 'exsys/managed-usb'
+
+$opts  = { :commit => false, :default => nil }
+parser = OptionParser.new do |op|
+    op.banner = "Usage: #{op.program_name} ACTION"
+
+    op.on '-d', '--device=DEV',      'Serial line to hub'
+    op.on '-D', '--default=BOOLEAN', TrueClass, 'Default state if not specified'
+    op.on '-p', '--password=STRING', 'Hub password'
+    op.on '-c', '--commit',          'Commit change to flash memory'
+    op.on       '--debug[=FILE]',    'Debug output file'
+    op.on '-v', '--[no-]verbose',    'Run verbosely'
+    op.on '-V', '--version',         'Version' do
+        puts "ExSYS library : #{ExSYS::VERSION}"
+        exit
+    end
+    op.on '-h', '--help',          'Help' do
+        puts op
+        exit
+    end    
+end
+parser.parse!(into: $opts)
+
+puts $opts.inspect
+
+debug = if $opts.include?(:debug)
+              if $opts[:debug].nil?
+              then STDERR
+              else File.open($opts[:debug], File::RDWR|File::CREAT)
+              end
+          end
+$hub = ExSYS::ManagedUSB.new($opts[:device], $opts[:password],
+                             debug: debug)
+
+
+begin
+    case action = ARGV.shift
+    when nil
+        puts parser
+        exit
+
+    when 'on'
+        puts ARGV.map(&:to_i).join(',')
+        $hub.on(*ARGV.map(&:to_i), commit: $opts[:commit])
+
+    when 'off'
+        $hub.off(*ARGV.map(&:to_i), commit: $opts[:commit])
+
+    when 'toggle'
+        $hub.toggle(*ARGV.map(&:to_i), commit: $opts[:commit])
+
+    when 'set'
+        t  = ExSYS::ManagedUSB::TRUE_LIST .to_h {|e| [ e.to_s, e ]}
+        f  = ExSYS::ManagedUSB::FALSE_LIST.to_h {|e| [ e.to_s, e ]}
+        tf = t.merge(f) { raise "true/false conflict (internal error)" }
+        r  = tf.keys.map {|e| Regexp.escape(e)}
+        a = ARGV.to_h {|e| 
+            raise "invalid argument" unless e =~ /^(\d+):(#{r.join('|')})$/
+            [$1.to_i, tf[$2]]
+        }
+        $hub.set(a, $opts[:default], commit: $opts[:commit])
+        
+    when 'commit'
+        $hub.commit
+
+    when 'reset'
+        $hub.reset
+
+    when 'restore'
+        $hub.restore
+    end
+#rescue => e
+#    $stderr.puts "#{parser.program_name}: #{e}"
+end

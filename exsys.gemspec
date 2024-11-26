@@ -21,6 +21,9 @@ Gem::Specification.new do |s|
     s.files       = %w[ README.md exsys.gemspec ] +
                     Dir['lib/**/*.rb']
 
+    s.bindir      = 'bin'
+    s.executables << 'exsys-usb'
+
     s.add_dependency 'uart'
     s.add_development_dependency 'yard', '~>0'
     s.add_development_dependency 'rake', '~>13'
