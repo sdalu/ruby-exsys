@@ -7,8 +7,8 @@ class ManagedUSB
     SPEED      = 9600                     # @!visibility private
     PASSWORD   = 'pass'.freeze            # @!visibility private
     PORTS      = 1.upto(16).to_a.freeze   # @!visibility private
-    TRUE_LIST  = [ 1, :on,  :ON,  :true,  :TRUE,  true  ].freeze # @!visibility private
-    FALSE_LIST = [ 0, :off, :OFF, :false, :FALSE, false ].freeze # @!visibility private
+    TRUE_LIST  = [ 1, :on,  :ON,  :true,  :TRUE,  :t, :T, true  ].freeze # @!visibility private
+    FALSE_LIST = [ 0, :off, :OFF, :false, :FALSE, :f, :F, false ].freeze # @!visibility private
     
     # Error handling class
     class Error < StandardError
