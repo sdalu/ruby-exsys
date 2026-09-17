@@ -18,13 +18,15 @@ Gem::Specification.new do |s|
     s.authors     = [ "Stéphane D'Alu" ]
     s.email       = [ 'stephane.dalu@insa-lyon.fr' ]
 
-    s.files       = %w[ README.md exsys.gemspec ] +
-                    Dir['lib/**/*.rb']
+    s.files       = %w[ README.md exsys.gemspec Rakefile ] +
+                    Dir['lib/**/*.rb'] +
+                    Dir['test/**/*.rb']
 
     s.bindir      = 'bin'
     s.executables << 'exsys-usb'
 
     s.add_dependency 'uart'
+    s.add_development_dependency 'minitest', '~>5'
     s.add_development_dependency 'yard', '~>0'
     s.add_development_dependency 'rake', '~>13'
 end

@@ -37,7 +37,14 @@ hub.set({ 1 => true, 2 => true }, false)
 ~~~
 
 
+Tests
+~~~sh
+rake test          # or: ruby -Itest test/test_managed_usb.rb
+~~~
 
+The suite drives the library and the executable against a model of the
+hub's serial protocol (`test/support/`), so it needs neither a hub nor
+the `uart`/`termios` gems.
 
 
 
