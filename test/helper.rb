@@ -2,6 +2,7 @@ require 'minitest/autorun'
 require 'fileutils'
 require 'stringio'
 require 'open3'
+require 'shellwords'
 require 'tmpdir'
 
 ROOT = File.expand_path('..', __dir__)
@@ -21,11 +22,17 @@ module CLI
     EXE = File.join(ROOT, 'bin', 'exsys-usb')
 
     def exsys_usb(*args, env: {})
+        exsys_usb_raw([ '-d', '/dev/null', *args ], env: env)
+    end
+
+    # As above, but with nothing added to the arguments -- for running a
+    # command line exactly as some other artifact spells it.
+    def exsys_usb_raw(args, env: {})
         Open3.capture3({ 'EXSYS_TEST_HUB' => hub_file }.merge(env),
                        RbConfig.ruby,
                        '-I', File.join(ROOT, 'test', 'support'),
                        '-I', File.join(ROOT, 'lib'),
-                       EXE, '-d', '/dev/null', *args)
+                       EXE, *args)
     end
 
     # The hub the subprocesses share, as this test left it.
