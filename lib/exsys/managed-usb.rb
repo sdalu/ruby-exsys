@@ -9,7 +9,12 @@ class ManagedUSB
     PORTS      = 1.upto(16).to_a.freeze   # @!visibility private
     TRUE_LIST  = [ 1, :on,  :ON,  :true,  :TRUE,  :t, :T, true  ].freeze # @!visibility private
     FALSE_LIST = [ 0, :off, :OFF, :false, :FALSE, :f, :F, false ].freeze # @!visibility private
-    
+
+    # Raised by #flock when the platform won't lock a character device
+    LOCK_ERRORS = [ Errno::EOPNOTSUPP, Errno::ENOTSUP, Errno::ENOLCK,
+                    Errno::EINVAL,      Errno::EBADF,
+                    NotImplementedError ].freeze # @!visibility private
+
     # Error handling class
     class Error < StandardError
     end
@@ -34,21 +39,21 @@ class ManagedUSB
     #
     # @param commit   [Boolean] Commit to flash memory
     def toggle(*ports, commit: false)
-        _set(_get ^ mask(ports, :all), commit: commit)
+        session { _set(_get ^ mask(ports, :all), commit: commit) }
     end
 
     # Turn on all or specified ports
     # 
     # @param commit   [Boolean] Commit to flash memory
     def on(*ports, commit: false)
-        _set(_get | mask(ports, :all), commit: commit)
+        session { _set(_get | mask(ports, :all), commit: commit) }
     end
 
     # Turn off all or specified ports
     # 
     # @param commit   [Boolean] Commit to flash memory
     def off(*ports, commit: false)
-        _set(_get & ~mask(ports, :all), commit: commit)
+        session { _set(_get & ~mask(ports, :all), commit: commit) }
     end
 
     # Set state for the specified ports
@@ -71,8 +76,6 @@ class ManagedUSB
     # @param default  [Boolean,nil] Default value to use if unspecified
     # @param commit   [Boolean]     Commit to flash memory
     def set(dataset, default = nil, commit: false)
-        val = _get
-
         # Normalize
         keys = dataset.keys        
         if (keys - PORTS).empty?
@@ -87,7 +90,9 @@ class ManagedUSB
         elsif (keys - [:on, :off]).empty?
             on  = Array(dataset[:on ])
             off = Array(dataset[:off])
-            
+
+            check_ports(on + off)
+
             unless (on & off).empty?
                 raise ArgumentError, "on/off overlap"
             end
@@ -106,16 +111,22 @@ class ManagedUSB
             end
         end
 
-        # Compute value
-        dataset.compact.each do |k,v|
-            flg = 1 << (k-1)
-            if v
-            then val |=  flg
-            else val &= ~flg
+        # Compute value and apply, holding the line for the whole
+        # read-modify-write so a concurrent process cannot interleave
+        # its own update between the read and the write.
+        session do
+            val = _get
+
+            dataset.compact.each do |k,v|
+                flg = 1 << (k-1)
+                if v
+                then val |=  flg
+                else val &= ~flg
+                end
             end
+
+            _set(val, commit: commit)
         end
-        
-        _set(val, commit: commit)
     end
 
     # Get hub current state for all ports
@@ -138,13 +149,16 @@ class ManagedUSB
         when :ports
             h
         when :on_off
-            h.reduce({}) {|acc, (k,v)|
-                acc.merge(v ? :on : :off => [ k ]) {|k,o,n| o + n  }
+            # Seeded with both keys, so that a hub with all its ports
+            # in the same state still answers the documented shape
+            # instead of omitting the empty one.
+            h.reduce({ :on => [], :off => [] }) {|acc, (k,v)|
+                acc.merge(v ? :on : :off => [ k ]) {|_,o,n| o + n  }
             }
         when :on
-            h.select {|k,v| v }.keys
+            h.select {|_,v| v }.keys
         when :off
-            h.reject {|k,v| v }.keys
+            h.reject {|_,v| v }.keys
         else
             raise ArgumentError
         end
@@ -152,19 +166,20 @@ class ManagedUSB
 
     # Restore port states from the flash memory
     def restore
-        action('RD', @password).then { self }
+        action('RD', @password, secrets: [ @password ]).then { self }
     end
 
     # Save the port states to the flash memory
     def commit
-        action('WP', @password).then { self }
+        action('WP', @password, secrets: [ @password ]).then { self }
     end
 
     # Perform a hub reset action
     #
     # @note power is not maintained accros a reset
     def reset
-        action('RH', @password, reply: false).then { self }
+        action('RH', @password,
+               reply: false, secrets: [ @password ]).then { self }
     end
 
     # Change the hub protection password
@@ -172,12 +187,21 @@ class ManagedUSB
         new = PASSWORD                           if new.nil?
         raise ArgumentError, 'password too long' if new.size > 8
         new_password = new.ljust(8)
-        action('CP', @password, new_password)
+        action('CP', @password, new_password,
+               secrets: [ @password, new_password ])
         @password = new_password
         self
     end
     
     private
+
+    def check_ports(ports)
+        ports.each do |p|
+            unless PORTS.include?(p)
+                raise ArgumentError, "invalid port: #{p.inspect}"
+            end
+        end
+    end
     
     def mask(ports, empty = :none)
         case empty
@@ -186,8 +210,9 @@ class ManagedUSB
             ports = PORTS if ports.empty?
         else raise ArgumentError
         end
-        
-        ports.reduce(0) {|acc, obj| acc |= 1 << (obj-1) }
+
+        check_ports(ports)
+        ports.reduce(0) {|acc, obj| acc | 1 << (obj-1) }
     end
 
     def _get
@@ -196,7 +221,7 @@ class ManagedUSB
         if (data.size == 3) && (data[0] == 'E')
             raise Error, data[1..-1]
         elsif data.size != 8
-            raise Error
+            raise Error, "unexpected reply: #{data.inspect}"
         end
 
         [ data ].pack('H4').unpack1('v')
@@ -204,14 +229,51 @@ class ManagedUSB
 
     def _set(v, commit: false)
         dataset = ([v].pack('v').unpack1('H*') + 'ffff').upcase
-        action(commit ? 'FP' : 'SP', @password, dataset).then { self }
+        action(commit ? 'FP' : 'SP', @password, dataset,
+               secrets: [ @password ]).then { self }
     end
-    
-    
-    def action(*cmds, reply: true, check: true)
-        cmd = cmds.join
+
+    # Run a block with the serial line open and exclusively locked.
+    #
+    # Nested calls reuse the outer session, so that a read-modify-write
+    # wrapped in one holds the line across both the GP and the SP
+    # command rather than reopening in between.
+    def session
+        return yield @serial if @serial
+
         UART.open @line, SPEED do |serial|
-            @debug&.puts "<-- #{cmd}"
+            flock(serial)
+            begin
+                @serial = serial
+                yield serial
+            ensure
+                @serial = nil
+            end
+        end
+    end
+
+    # Take an exclusive lock on the serial line, keeping concurrent
+    # processes from interleaving their own read-modify-write.
+    #
+    # Not every platform locks a character device; where it is refused
+    # the operation carries on unlocked -- single-process use is
+    # unaffected, concurrent use stays racy -- and says so on the debug
+    # output rather than failing outright.
+    def flock(serial)
+        serial.flock(File::LOCK_EX)
+    rescue *LOCK_ERRORS => e
+        @debug&.puts "!!! serial line not lockable (#{e.class})"
+    end
+
+    # Blank out the passwords before a command reaches the debug output.
+    def redact(str, secrets)
+        secrets.reduce(str) {|acc, s| acc.gsub(s, '*' * s.size) }
+    end
+
+    def action(*cmds, reply: true, check: true, secrets: [])
+        cmd = cmds.join
+        session do |serial|
+            @debug&.puts "<-- #{redact(cmd, secrets)}"
             serial.write "#{cmd}\r"
             if reply
                 serial.read.chomp.tap do |data|
