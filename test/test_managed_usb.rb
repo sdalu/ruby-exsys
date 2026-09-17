@@ -11,15 +11,35 @@ class TestManagedUSB < Minitest::Test
 
     ## Switching #########################################################
 
-    def test_on_without_argument_powers_every_port
-        @usb.on
+    def test_all_powers_every_port
+        @usb.on(ExSYS::ManagedUSB::ALL)
         assert_equal ExSYS::ManagedUSB::PORTS, @hub.ports_on
     end
 
-    def test_off_without_argument_powers_nothing
-        @usb.on
-        @usb.off
+    def test_all_unpowers_every_port
+        @usb.on(:all)
+        @usb.off(:all)
         assert_empty @hub.ports_on
+    end
+
+    # Regression: an empty list used to mean every port, so a caller
+    # splatting a computed list that came back empty switched all
+    # sixteen.  on(*[]) and on() are the same call, so neither can be
+    # allowed through.
+    def test_an_empty_port_list_is_refused_not_taken_as_every_port
+        @usb.on(:all)
+        [ ->{ @usb.on(*[])     }, ->{ @usb.on        },
+          ->{ @usb.off(*[])    }, ->{ @usb.off       },
+          ->{ @usb.toggle(*[]) }, ->{ @usb.toggle    } ].each do |op|
+            err = assert_raises(ArgumentError, &op)
+            assert_match(/no port given/, err.message)
+        end
+        assert_equal ExSYS::ManagedUSB::PORTS, @hub.ports_on,
+                     'the hub must not have been touched'
+    end
+
+    def test_all_cannot_be_mixed_with_port_numbers
+        assert_raises(ArgumentError) { @usb.on(:all, 3) }
     end
 
     def test_on_and_off_are_restricted_to_the_named_ports
@@ -36,8 +56,8 @@ class TestManagedUSB < Minitest::Test
     end
 
     def test_switching_returns_self_so_calls_chain
-        assert_same @usb, @usb.on
-        @usb.on.off(4, 5, 6)
+        assert_same @usb, @usb.on(:all)
+        @usb.on(:all).off(4, 5, 6)
         assert_equal ExSYS::ManagedUSB::PORTS - [ 4, 5, 6 ], @hub.ports_on
     end
 
@@ -141,7 +161,7 @@ class TestManagedUSB < Minitest::Test
     def test_get_on_off_always_carries_both_keys
         assert_equal({ :on => [], :off => ExSYS::ManagedUSB::PORTS },
                      @usb.get(:on_off))
-        @usb.on
+        @usb.on(:all)
         assert_equal({ :on => ExSYS::ManagedUSB::PORTS, :off => [] },
                      @usb.get(:on_off))
         @usb.off(1)

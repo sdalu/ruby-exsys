@@ -41,6 +41,7 @@ class ManagedUSB
     SPEED      = 9600                     # @!visibility private
     PASSWORD   = 'pass'.freeze            # @!visibility private
     PORTS      = 1.upto(16).to_a.freeze   # @!visibility private
+    ALL        = :all                     # every port, said explicitly
     TRUE_LIST  = [ 1, :on,  :ON,  :true,  :TRUE,  :t, :T, true  ].freeze # @!visibility private
     FALSE_LIST = [ 0, :off, :OFF, :false, :FALSE, :f, :F, false ].freeze # @!visibility private
 
@@ -77,25 +78,31 @@ class ManagedUSB
         @debug    = debug
     end
 
-    # Toggle all or specified ports
+    # Toggle the given ports
     #
+    # @param ports    [Integer,:all] ports to invert, or ALL for every
+    #                                one.  An empty list is an error.
     # @param commit   [Boolean] Commit to flash memory
     def toggle(*ports, commit: false)
-        session { _set(_get ^ mask(ports, :all), commit: commit) }
+        session { _set(_get ^ mask(ports), commit: commit) }
     end
 
-    # Turn on all or specified ports
-    # 
+    # Turn on the given ports
+    #
+    # @param ports    [Integer,:all] ports to power, or ALL for every
+    #                                one.  An empty list is an error.
     # @param commit   [Boolean] Commit to flash memory
     def on(*ports, commit: false)
-        session { _set(_get | mask(ports, :all), commit: commit) }
+        session { _set(_get | mask(ports), commit: commit) }
     end
 
-    # Turn off all or specified ports
-    # 
+    # Turn off the given ports
+    #
+    # @param ports    [Integer,:all] ports to unpower, or ALL for every
+    #                                one.  An empty list is an error.
     # @param commit   [Boolean] Commit to flash memory
     def off(*ports, commit: false)
-        session { _set(_get & ~mask(ports, :all), commit: commit) }
+        session { _set(_get & ~mask(ports), commit: commit) }
     end
 
     # Set state for the specified ports
@@ -290,13 +297,16 @@ class ManagedUSB
         end
     end
     
-    def mask(ports, empty = :none)
-        case empty
-        when :none
-        when :all
-            ports = PORTS if ports.empty?
-        else raise ArgumentError
+    def mask(ports)
+        # An empty list is refused rather than taken to mean everything.
+        # A caller splatting a computed list cannot say "none": on(*[])
+        # and on() are the same call, so the convenience would silently
+        # switch all sixteen whenever the list came back empty.
+        if ports.empty?
+            raise ArgumentError,
+                  "no port given (#{ALL.inspect} means every port)"
         end
+        ports = PORTS if ports == [ ALL ]
 
         check_ports(ports)
         ports.reduce(0) {|acc, obj| acc | (1 << (obj-1)) }

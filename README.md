@@ -116,8 +116,8 @@ exsys-usb -d /dev/ttyU0 off 3 || echo "could not switch port 3 off"
 # and enable debug output to stderr
 hub = ExSYS::ManagedUSB.new('/dev/ttyU0', debug: STDERR)
 
-# Chain turning on all ports, then switch off ports 4, 5 and 6
-hub.on.off(4,5,6)
+# Chain turning on every port, then switch off ports 4, 5 and 6
+hub.on(:all).off(4,5,6)
 
 # Toggle each port in turn
 ExSYS::ManagedUSB::PORTS.each do |p|
@@ -140,6 +140,13 @@ hub.get(:on_off)  # => { :on => [1, 3], :off => [2, 4, ...] }
 hub.get(:on)      # => [ 1, 3 ]
 hub.get(:off)     # => [ 2, 4, ... ]
 ~~~
+
+`on`, `off` and `toggle` want an explicit port list, and `:all` is how
+you say every port.  An empty list is refused rather than read as
+"all": `hub.off(*ports)` with an empty `ports` is the very same call as
+`hub.off`, so a computed list that came back empty would otherwise
+switch all sixteen.  The command line is unaffected -- naming no port
+there still means every port.
 
 Switching is a read-modify-write, and the library holds the serial
 line -- locked -- across the whole exchange, so two processes driving

@@ -43,19 +43,25 @@ begin
     $hub = ExSYS::ManagedUSB.new($opts[:device], $opts[:password],
                                  debug: debug)
 
+    # Naming no port on the command line still means every port.  The
+    # library wants that said outright rather than inferred from an
+    # empty list, so it is spelled out here.
+    ports = -> { ARGV.empty? ? [ ExSYS::ManagedUSB::ALL ]
+                             : ARGV.map(&:to_i) }
+
     case action = ARGV.shift
     when nil
         puts parser
         exit
 
     when 'on'
-        $hub.on(*ARGV.map(&:to_i), commit: $opts[:commit])
+        $hub.on(*ports.call, commit: $opts[:commit])
 
     when 'off'
-        $hub.off(*ARGV.map(&:to_i), commit: $opts[:commit])
+        $hub.off(*ports.call, commit: $opts[:commit])
 
     when 'toggle'
-        $hub.toggle(*ARGV.map(&:to_i), commit: $opts[:commit])
+        $hub.toggle(*ports.call, commit: $opts[:commit])
 
     when 'set'
         t  = ExSYS::ManagedUSB::TRUE_LIST .to_h {|e| [ e.to_s, e ]}
