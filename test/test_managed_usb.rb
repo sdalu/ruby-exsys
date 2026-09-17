@@ -280,6 +280,66 @@ class TestManagedUSB < Minitest::Test
         assert_equal 1, @hub.locks
     end
 
+    # Regression: EBADF and EINVAL were swallowed alongside the genuine
+    # "this platform will not lock this" errors.  Both mean a bug here,
+    # and swallowing one runs unlocked while reporting success.
+    def test_an_unexpected_lock_error_is_not_swallowed
+        @hub.lock_error = Errno::EBADF
+        assert_raises(Errno::EBADF) { @usb.on(1) }
+    end
+
+    ## Sessions #########################################################
+
+    def test_session_yields_the_hub_and_returns_the_block_value
+        result = @usb.session {|h| assert_same @usb, h; :done }
+        assert_equal :done, result
+    end
+
+    def test_one_session_holds_one_line_for_every_call_inside_it
+        @usb.session do
+            @usb.get
+            @usb.on(1)
+            @usb.off(1)
+        end
+        assert_equal 1, @hub.opens
+        assert_equal 1, @hub.locks
+    end
+
+    def test_without_a_session_each_call_opens_its_own_line
+        @usb.get
+        @usb.on(1)
+        assert_equal 2, @hub.opens
+    end
+
+    def test_a_session_releases_the_line_even_when_the_block_raises
+        assert_raises(RuntimeError) { @usb.session { raise 'boom' } }
+        @usb.on(1)                       # must open afresh, not reuse
+        assert_equal 2, @hub.opens
+        assert_equal [ 1 ], @hub.ports_on
+    end
+
+    # Regression: the open line was plain instance state, so a second
+    # thread either borrowed a line it held no lock on -- losing one
+    # thread's change -- or had it closed underneath it by the first
+    # thread's ensure, which surfaced as a NoMethodError on nil.
+    def test_two_threads_never_share_one_line
+        Dir.mktmpdir('exsys-threads') do |dir|
+            fake = FakeHub.new(path: File.join(dir, 'hub'),
+                               lock: File.join(dir, 'lock'), delay: 0.2)
+            UART.hub = fake
+            usb = ExSYS::ManagedUSB.new('/dev/null')
+
+            a = Thread.new { usb.on(1) }
+            sleep 0.1                    # B enters while A holds the line
+            b = Thread.new { usb.on(2) }
+            [ a, b ].each(&:join)
+
+            assert_equal 2, fake.opens, 'each thread opens its own line'
+            assert_equal 2, fake.locks, 'each thread takes its own lock'
+            assert_equal [ 1, 2 ], fake.ports_on
+        end
+    end
+
     # A platform that will not lock a character device must not make the
     # tool unusable; it degrades to unlocked and says so.
     def test_an_unlockable_line_degrades_rather_than_failing

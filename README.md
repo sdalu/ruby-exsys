@@ -141,10 +141,23 @@ hub.get(:on)      # => [ 1, 3 ]
 hub.get(:off)     # => [ 2, 4, ... ]
 ~~~
 
-Switching is a read-modify-write, and the library holds the serial line
--- locked -- across the whole exchange, so two processes driving the
-same hub cannot lose each other's changes.  The wire protocol is
-documented in the `ExSYS::ManagedUSB` class comment.
+Switching is a read-modify-write, and the library holds the serial
+line -- locked -- across the whole exchange, so two processes driving
+the same hub cannot lose each other's changes.
+
+A read-decide-write spans two calls, so it needs the line held across
+both.  Wrap them in a session:
+
+~~~ruby
+hub.session do
+    hub.on(1) unless hub.get[1]
+end
+~~~
+
+Sessions nest, so the methods above stay correct when called inside
+one, and a session belongs to the thread that opened it: another thread
+opens, and locks, its own line.  The wire protocol is documented in the
+`ExSYS::ManagedUSB` class comment.
 
 
 ## Tests

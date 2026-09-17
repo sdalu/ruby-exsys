@@ -7,8 +7,8 @@
 class FakeHub
     DEFAULT_PASSWORD = 'pass'.ljust(8)
 
-    attr_reader   :log, :opens, :locks, :line, :speed, :mode
-    attr_accessor :password, :silent, :lockable, :garbage
+    attr_reader   :log, :opens, :locks, :line, :speed, :mode, :lock_path
+    attr_accessor :password, :silent, :lockable, :garbage, :lock_error
 
     # @param state    [Integer] initial port bitmap
     # @param path     [String]  file backing the state, so that separate
@@ -24,7 +24,7 @@ class FakeHub
         @state    = state
         @flash    = state
         @path     = path
-        @lock     = lock
+        @lock_path = lock
         @delay    = delay
         @log      = []
         @opens    = 0
@@ -32,6 +32,7 @@ class FakeHub
         @silent   = false     # hub answers nothing at all
         @lockable = true      # platform allows locking the line
         @garbage  = nil       # hub answers this instead, when set
+        @lock_error = nil     # raised by flock; for the propagation test
 
         # Attach to the hub the file already describes, so that a test
         # can inspect what its subprocesses did; seed it otherwise.
@@ -67,18 +68,13 @@ class FakeHub
         @opens += 1
     end
 
-    def flock(mode)
-        raise Errno::ENOTSUP unless @lockable
+    # Called by each opened line before it locks.  The lock handle
+    # itself belongs to the line, not to the hub, so that two threads
+    # hold two of them and genuinely contend.
+    def lock_attempted
+        raise @lock_error            if @lock_error   # must NOT be swallowed
+        raise Errno::ENOTSUP         unless @lockable # platform refusal
         @locks += 1
-        return 0 if @lock.nil?
-
-        @lockfh = File.open(@lock, File::RDWR|File::CREAT, 0o600)
-        @lockfh.flock(mode)
-    end
-
-    def unlock
-        @lockfh&.close
-        @lockfh = nil
     end
 
     # Answer one command, as the hub would.

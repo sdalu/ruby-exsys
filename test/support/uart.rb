@@ -18,12 +18,24 @@ module UART
         def reset! = @hub = nil
     end
 
-    # Stands in for the File that UART.open normally yields.
+    # Stands in for the File that UART.open normally yields.  Each one
+    # carries its own lock handle, as a real open would, so that two of
+    # them contend instead of sharing one.
     class Serial
-        def initialize(hub) = @hub = hub
-        def flock(mode)     = @hub.flock(mode)
-        def write(cmd)      = @reply = @hub.command(cmd.chomp("\r"))
-        def read            = @reply.nil? ? '' : "#{@reply}\r"
+        def initialize(hub)
+            @hub  = hub
+            @lock = hub.lock_path &&
+                    File.open(hub.lock_path, File::RDWR|File::CREAT, 0o600)
+        end
+
+        def flock(mode)
+            @hub.lock_attempted
+            @lock ? @lock.flock(mode) : 0
+        end
+
+        def write(cmd) = @reply = @hub.command(cmd.chomp("\r"))
+        def read       = @reply.nil? ? '' : "#{@reply}\r"
+        def close      = @lock&.close
     end
 
     def self.open(line, speed = 9600, mode = '8N1')
@@ -34,7 +46,7 @@ module UART
         begin
             yield serial
         ensure
-            hub.unlock
+            serial.close
         end
     end
 end

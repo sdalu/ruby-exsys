@@ -45,8 +45,16 @@ class ManagedUSB
     FALSE_LIST = [ 0, :off, :OFF, :false, :FALSE, :f, :F, false ].freeze # @!visibility private
 
     # Raised by #flock when the platform won't lock a character device
+    # Key under which each thread keeps its open lines, one per hub.
+    # `private` does not apply to constants, so it lives here with the
+    # rest rather than pretending to be scoped.
+    SESSIONS = :exsys_managed_usb_sessions   # @!visibility private
+
+    # Only the errors that mean "this platform will not lock this kind
+    # of file".  A bad descriptor or a bad operation is a bug here, and
+    # swallowing it would run unlocked while reporting success -- the
+    # very outcome the lock exists to prevent -- so those propagate.
     LOCK_ERRORS = [ Errno::EOPNOTSUPP, Errno::ENOTSUP, Errno::ENOLCK,
-                    Errno::EINVAL,      Errno::EBADF,
                     NotImplementedError ].freeze # @!visibility private
 
     # Error handling class
@@ -227,7 +235,52 @@ class ManagedUSB
         self
     end
     
+    # Hold the serial line, exclusively locked, for the whole block.
+    #
+    # Every switching method already does this around its own
+    # read-modify-write.  Wrapping several calls in one session extends
+    # that to the sequence, which is what a read-decide-write needs if
+    # another process or thread is driving the same hub:
+    #
+    #     hub.session do
+    #         hub.off(*hub.get(:on))
+    #     end
+    #
+    # Sessions nest: an inner one reuses the line the outer one holds,
+    # so the methods above stay correct when called inside one.
+    #
+    # A session belongs to the thread that opened it.  Another thread
+    # opens, and locks, its own rather than borrowing this one.
+    #
+    # @yieldparam hub [ManagedUSB] this hub
+    # @return the value of the block
+    def session
+        return yield self if serial
+
+        UART.open @line, SPEED do |line|
+            flock(line)
+            begin
+                self.serial = line
+                yield self
+            ensure
+                self.serial = nil
+            end
+        end
+    end
+
     private
+
+    # The line this thread currently holds for this hub, if any.
+    #
+    # Scoped to the thread as well as to the hub, because the handle and
+    # its lock belong to whoever opened them: a second thread reusing
+    # this one would be writing down a line it holds no lock on.
+    def serial = (Thread.current[SESSIONS] ||= {})[self]
+
+    def serial=(line)
+        store = (Thread.current[SESSIONS] ||= {})
+        line.nil? ? store.delete(self) : store[self] = line
+    end
 
     def check_ports(ports)
         ports.each do |p|
@@ -267,25 +320,6 @@ class ManagedUSB
                secrets: [ @password ]).then { self }
     end
 
-    # Run a block with the serial line open and exclusively locked.
-    #
-    # Nested calls reuse the outer session, so that a read-modify-write
-    # wrapped in one holds the line across both the GP and the SP
-    # command rather than reopening in between.
-    def session
-        return yield @serial if @serial
-
-        UART.open @line, SPEED do |serial|
-            flock(serial)
-            begin
-                @serial = serial
-                yield serial
-            ensure
-                @serial = nil
-            end
-        end
-    end
-
     # Take an exclusive lock on the serial line, keeping concurrent
     # processes from interleaving their own read-modify-write.
     #
@@ -306,7 +340,7 @@ class ManagedUSB
 
     def action(*cmds, reply: true, check: true, secrets: [])
         cmd = cmds.join
-        session do |serial|
+        session do
             @debug&.puts "<-- #{redact(cmd, secrets)}"
             serial.write "#{cmd}\r"
             if reply
