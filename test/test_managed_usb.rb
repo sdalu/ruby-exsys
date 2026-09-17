@@ -361,7 +361,14 @@ class TestManagedUSB < Minitest::Test
     end
 
     def test_reset_expects_no_reply
-        assert_same @usb, @usb.reset
+        assert_same @usb, @usb.reset(confirm: true)
+    end
+
+    def test_reset_refuses_unless_it_is_confirmed
+        @usb.on(:all)
+        err = assert_raises(ArgumentError) { @usb.reset }
+        assert_match(/confirm: true/, err.message)
+        refute_includes @hub.log.map {|c| c[0, 2] }, 'RH'
     end
 
     ## Password ##########################################################

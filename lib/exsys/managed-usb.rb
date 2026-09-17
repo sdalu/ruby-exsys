@@ -327,8 +327,18 @@ class ManagedUSB
 
     # Perform a hub reset action
     #
+    # Refuses without +confirm: true+, for the same reason
+    # {#factory_reset} does: every port loses power while it runs.
+    #
     # @note power is not maintained accros a reset
-    def reset
+    # @param confirm [Boolean] must be true; the keyword is the point
+    # @raise [ArgumentError] when not confirmed
+    def reset(confirm: false)
+        unless confirm
+            raise ArgumentError,
+                  'reset reboots the hub, and every port loses power ' \
+                  'while it does; pass confirm: true'
+        end
         action('RH', @password,
                reply: false, secrets: [ @password ]).then { self }
     end
@@ -517,7 +527,14 @@ class ManagedUSB
             @debug&.puts "<-- #{redact(cmd, secrets)}"
             serial.write "#{cmd}\r"
             if reply
-                serial.read.chomp.tap do |data|
+                # To the line terminator, not to EOF.  There is no EOF
+                # on a serial line: what ends a read is the uart gem's
+                # VTIME, half a second of silence, so reading to EOF
+                # spent that half second on every single command while
+                # the hub had already answered.  A hub that says
+                # nothing still costs exactly that, and still yields
+                # the empty string the callers below expect.
+                (serial.gets("\n") || '').chomp.tap do |data|
                     @debug&.puts "--> #{data}"
                     if check && data[0] != 'G'
                         raise Error, data[1..-1]

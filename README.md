@@ -76,9 +76,13 @@ exsys-usb -d ${dev} -c on 1           # Turn on port 1, and save to flash
 | `query`             | What the hub says it is: id, ports, firmware    |
 | `commit`            | Save the current port state to flash            |
 | `factory-reset`     | Factory reset; refuses without `--yes`          |
-| `reset`             | Reset the hub; port power is *not* maintained   |
+| `reset`             | Reboot the hub; refuses without `--yes`         |
 
 > [!WARNING]
+> `reset` and `factory-reset` both drop power to every port, so both
+> refuse without `--yes`.  `reset` reboots the whole hub; it is not the
+> way to power-cycle one device, which is `off` then `on`.
+>
 > `factory-reset` is not the inverse of `commit`.  It issues the hub's
 > `RD` command: every port drops and the password goes back to `pass`.
 > Nothing in the protocol reloads a saved state -- the hub applies it

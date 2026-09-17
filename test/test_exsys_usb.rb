@@ -124,6 +124,17 @@ class TestExsysUsb < Minitest::Test
 
     ## Confirming the irreversible ######################################
 
+    def test_reset_refuses_without_yes
+        _, err, st = exsys_usb('reset')
+        assert_equal 1, st.exitstatus
+        assert_match(/--yes/, err)
+    end
+
+    def test_reset_runs_when_meant
+        _, err, st = exsys_usb('--yes', 'reset')
+        assert_equal 0, st.exitstatus, err
+    end
+
     def test_factory_reset_refuses_without_yes
         exsys_usb('on', '1')
         _, err, st = exsys_usb('factory-reset')

@@ -34,7 +34,12 @@ module UART
         end
 
         def write(cmd) = @reply = @hub.command(cmd.chomp("\r"))
-        def read       = @reply.nil? ? '' : "#{@reply}\r"
+
+        # A real hub ends every reply CR LF -- seen in the hex off the
+        # wire -- so a read to the terminator takes the whole line.
+        def gets(_sep = "\n")
+            @reply.nil? ? nil : "#{@reply}\r\n"
+        end
         def close      = @lock&.close
     end
 

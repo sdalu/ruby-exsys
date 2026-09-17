@@ -104,7 +104,11 @@ begin
         $hub.commit
 
     when 'reset'
-        $hub.reset
+        unless $opts[:yes]
+            raise 'reset reboots the hub, and every port loses power ' \
+                  'while it does; pass --yes to mean it'
+        end
+        $hub.reset(confirm: true)
 
     when 'factory-reset'
         unless $opts[:yes]
