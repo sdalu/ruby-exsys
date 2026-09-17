@@ -3,6 +3,40 @@ require "uart"
 module ExSYS
 
 # Control a ExSYS Managed USB hub
+#
+# The hub is commanded over a serial line, not over USB.  Each command
+# is a short ASCII frame closed by CR, and the hub answers G on success
+# or Exx on error.  GP is the exception: it needs no password, and it
+# answers the port state directly.
+#
+#     GP   read the port state      SP   set it, in RAM
+#     WP   write RAM to flash       FP   set it, in RAM and flash
+#     RD   restore RAM from flash   CP   change the password
+#     RH   reset the hub (no reply)
+#
+# A frame carries the whole 16-port state, so changing one port is a
+# read-modify-write: GP to read it, then SP to put it back.
+#
+#     ┌────┬──────────┬──────┬──────┐
+#     │ SP │ pass···· │ 0300 │ FFFF │
+#     └─┬──┴────┬─────┴──┬───┴──┬───┘
+#       │       │        │      └─────  port mask, 4 hex, always FFFF
+#       │       │        └────────────  port state, 4 hex, low byte first
+#       │       └─────────────────────  password, 8 chars (· = pad space)
+#       └─────────────────────────────  command, 2 chars
+#
+# The fields go out concatenated, with no separator: the frame above
+# is written as "SPpass    0300FFFF\r".
+#
+# Port n is bit n-1 of the state word, and the word is sent low byte
+# first, so ports 1 and 2 on is 0x0003 and reaches the wire as "0300":
+#
+#       port  8  7  6  5  4  3  2  1    16 15 14 13 12 11 10  9
+#       bit   0  0  0  0  0  0  1  1     0  0  0  0  0  0  0  0
+#           └───── low byte  03 ───┘   └──── high byte  00 ───┘
+#
+# The mask selects which ports the state word applies to; the library
+# always sends FFFF, i.e. all sixteen.
 class ManagedUSB
     SPEED      = 9600                     # @!visibility private
     PASSWORD   = 'pass'.freeze            # @!visibility private
@@ -212,7 +246,7 @@ class ManagedUSB
         end
 
         check_ports(ports)
-        ports.reduce(0) {|acc, obj| acc | 1 << (obj-1) }
+        ports.reduce(0) {|acc, obj| acc | (1 << (obj-1)) }
     end
 
     def _get

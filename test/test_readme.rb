@@ -47,11 +47,15 @@ class TestReadme < Minitest::Test
 
     # Those that invoke the executable, as [ line, argv ].  The shell
     # variable the README uses for the device is replaced by one that
-    # exists everywhere.
+    # exists everywhere, and anything the shell would interpret rather
+    # than pass on -- a pipe, a conditional, a redirection -- is cut
+    # off, since these run the executable directly and not under a
+    # shell.  What is checked is the invocation, not the plumbing.
     def documented_examples
         shell_commands.filter_map do |line|
             next unless line.start_with?(File.basename(EXE))
-            [ line, Shellwords.split(line.sub('${dev}', '/dev/null'))[1..] ]
+            cmd = line.split(/\s(?:\|\||&&|\||;|>>?)\s/).first
+            [ line, Shellwords.split(cmd.sub('${dev}', '/dev/null'))[1..] ]
         end
     end
 end
