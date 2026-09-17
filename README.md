@@ -72,8 +72,10 @@ exsys-usb -d ${dev} -c on 1           # Turn on port 1, and save to flash
 | `off [PORT...]`     | Unpower the listed ports, or every port         |
 | `toggle [PORT...]`  | Invert the listed ports, or every port          |
 | `set PORT:STATE...` | Set the listed ports; `-D` decides the rest     |
+| `status [PORT...]`  | Report the ports, one `N on` / `N off` per line |
+| `query`             | What the hub says it is: id, ports, firmware    |
 | `commit`            | Save the current port state to flash            |
-| `factory-reset`     | Factory reset (see the warning below)           |
+| `factory-reset`     | Factory reset; refuses without `--yes`          |
 | `reset`             | Reset the hub; port power is *not* maintained   |
 
 > [!WARNING]
@@ -94,6 +96,8 @@ A port state in `set` is written `PORT:STATE`, where `STATE` is one of
 | `-d`, `--device=DEV`  | Serial line to the hub (required)             |
 | `-p`, `--password=STR`| Hub password; defaults to `pass`              |
 | `-c`, `--commit`      | Also write the new state to flash             |
+| `-y`, `--yes`         | Mean a destructive action                     |
+| `-v`, `--verbose`     | Report the port states after a change         |
 | `-D`, `--default=BOOL`| State for the ports `set` does not name       |
 | `--debug[=FILE]`      | Trace the serial exchange to stderr, or FILE  |
 | `-V`, `--version`     | Print the library version                     |
@@ -102,6 +106,15 @@ A port state in `set` is written `PORT:STATE`, where `STATE` is one of
 The debug trace shows every frame sent and received, with the password
 blanked out; when it is written to a file, that file is created
 readable only by you.
+
+`status` prints one port per line, which greps and awks without
+parsing:
+
+~~~sh
+exsys-usb -d ${dev} status            # every port
+exsys-usb -d ${dev} status 3 7        # just those two
+exsys-usb -d ${dev} -v on 3           # switch, then report
+~~~
 
 ### Exit status
 
@@ -186,8 +199,11 @@ held.  So a hub object is bound to the hub it first asked.  If the
 device is unplugged and another appears under the same name, build a
 new one; nothing in the library can notice the swap.
 
-`hub.factory_reset` issues `RD` and carries the warning above.  It was
-called `restore` up to 0.6; the old name now raises rather than run.
+`hub.factory_reset(confirm: true)` issues `RD` and carries the warning
+above.  The keyword is required: it is the one operation here that
+nothing undoes, and the one most easily reached by misunderstanding.
+It was called `restore` up to 0.6; the old name now raises rather than
+run.
 
 Sessions nest, so the methods above stay correct when called inside
 one, and a session belongs to the thread that opened it: another thread

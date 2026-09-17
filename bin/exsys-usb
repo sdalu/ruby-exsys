@@ -4,7 +4,7 @@ require 'optparse'
 require 'exsys'
 require 'exsys/managed-usb'
 
-$opts  = { :commit => false, :default => nil }
+$opts  = { :commit => false, :default => nil, :yes => false }
 parser = OptionParser.new do |op|
     op.banner = "Usage: #{op.program_name} ACTION"
 
@@ -12,8 +12,9 @@ parser = OptionParser.new do |op|
     op.on '-D', '--default=BOOLEAN', TrueClass, 'Default state if not specified'
     op.on '-p', '--password=STRING', 'Hub password'
     op.on '-c', '--commit',          'Commit change to flash memory'
+    op.on '-y', '--yes',             'Confirm a destructive action'
     op.on       '--debug[=FILE]',    'Debug output file'
-    op.on '-v', '--[no-]verbose',    'Run verbosely'
+    op.on '-v', '--[no-]verbose',    'Report port states after a change'
     op.on '-V', '--version',         'Version' do
         puts "ExSYS library : #{ExSYS::VERSION}"
         exit
@@ -49,6 +50,18 @@ begin
     ports = -> { ARGV.empty? ? [ ExSYS::ManagedUSB::ALL ]
                              : ARGV.map(&:to_i) }
 
+    # One line per port, "3 on", which greps and awks cleanly.  Used by
+    # the status action and by --verbose after a change.
+    report = ->(only = []) {
+        state = $hub.get
+        (only.empty? ? $hub.ports : only).each do |p|
+            raise "invalid port: #{p}" unless state.key?(p)
+            puts "#{p} #{state[p] ? 'on' : 'off'}"
+        end
+    }
+    # Only meaningful after something changed.
+    verbose = -> { report.call if $opts[:verbose] }
+
     case action = ARGV.shift
     when nil
         puts parser
@@ -56,12 +69,15 @@ begin
 
     when 'on'
         $hub.on(*ports.call, commit: $opts[:commit])
+        verbose.call
 
     when 'off'
         $hub.off(*ports.call, commit: $opts[:commit])
+        verbose.call
 
     when 'toggle'
         $hub.toggle(*ports.call, commit: $opts[:commit])
+        verbose.call
 
     when 'set'
         t  = ExSYS::ManagedUSB::TRUE_LIST .to_h {|e| [ e.to_s, e ]}
@@ -73,7 +89,17 @@ begin
             [$1.to_i, tf[$2]]
         }
         $hub.set(a, $opts[:default], commit: $opts[:commit])
+        verbose.call
         
+    when 'status'
+        report.call(ARGV.map(&:to_i))
+
+    when 'query'
+        q = $hub.query
+        puts "id:       #{q[:id]}"
+        puts "ports:    #{q[:ports]}"
+        puts "firmware: #{q[:firmware]}"
+
     when 'commit'
         $hub.commit
 
@@ -81,7 +107,11 @@ begin
         $hub.reset
 
     when 'factory-reset'
-        $hub.factory_reset
+        unless $opts[:yes]
+            raise 'factory-reset drops every port and resets the ' \
+                  'password, and nothing undoes it; pass --yes to mean it'
+        end
+        $hub.factory_reset(confirm: true)
 
     # A tombstone rather than an alias: anyone typing the old name is
     # expecting the inverse of commit, which this never was.

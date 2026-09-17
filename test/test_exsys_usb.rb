@@ -70,10 +70,73 @@ class TestExsysUsb < Minitest::Test
     def test_restore_is_a_factory_reset
         exsys_usb('on', '1')
         exsys_usb('commit')
-        _, err, st = exsys_usb('factory-reset')
+        _, err, st = exsys_usb('--yes', 'factory-reset')
         assert_equal 0, st.exitstatus, err
         assert_empty hub.ports_on
         assert_empty hub.flash_ports
+    end
+
+    ## Reading the hub ##################################################
+
+    def test_status_lists_every_port
+        exsys_usb('on', '1', '3')
+        out, _, st = exsys_usb('status')
+        assert_equal 0, st.exitstatus
+        assert_equal 16, out.lines.size
+        assert_includes out.lines, "1 on\n"
+        assert_includes out.lines, "2 off\n"
+        assert_includes out.lines, "3 on\n"
+    end
+
+    def test_status_can_be_asked_about_named_ports
+        exsys_usb('on', '3')
+        out, _, = exsys_usb('status', '3', '4')
+        assert_equal "3 on\n4 off\n", out
+    end
+
+    def test_status_refuses_a_port_the_hub_does_not_have
+        _, err, st = exsys_usb('status', '99')
+        assert_equal 1, st.exitstatus
+        assert_match(/invalid port: 99/, err)
+    end
+
+    def test_query_reports_what_the_hub_says_it_is
+        out, _, st = exsys_usb('query')
+        assert_equal 0, st.exitstatus
+        assert_match(/^id:\s+CENTOS$/,   out)
+        assert_match(/^ports:\s+16$/,    out)
+        assert_match(/^firmware:\s+v02$/, out)
+    end
+
+    ## Verbose ##########################################################
+
+    def test_verbose_reports_the_state_after_a_change
+        out, _, = exsys_usb('-v', 'on', '2')
+        assert_includes out.lines, "2 on\n"
+        assert_equal 16, out.lines.size
+    end
+
+    def test_without_verbose_a_change_says_nothing
+        out, _, st = exsys_usb('on', '2')
+        assert_equal 0, st.exitstatus
+        assert_empty out
+    end
+
+    ## Confirming the irreversible ######################################
+
+    def test_factory_reset_refuses_without_yes
+        exsys_usb('on', '1')
+        _, err, st = exsys_usb('factory-reset')
+        assert_equal 1, st.exitstatus
+        assert_match(/--yes/, err)
+        assert_equal [ 1 ], hub.ports_on, 'the hub must not have been touched'
+    end
+
+    def test_factory_reset_runs_when_meant
+        exsys_usb('on', '1')
+        _, err, st = exsys_usb('--yes', 'factory-reset')
+        assert_equal 0, st.exitstatus, err
+        assert_empty hub.ports_on
     end
 
     ## Exit status -- regression.  Every failure used to be printed and

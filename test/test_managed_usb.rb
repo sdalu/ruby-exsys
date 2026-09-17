@@ -335,11 +335,19 @@ class TestManagedUSB < Minitest::Test
         assert_match(/not the inverse of commit/, err.message)
     end
 
+    def test_factory_reset_refuses_unless_it_is_confirmed
+        @usb.on(:all)
+        err = assert_raises(ArgumentError) { @usb.factory_reset }
+        assert_match(/confirm: true/, err.message)
+        assert_equal ExSYS::ManagedUSB::PORTS, @hub.ports_on,
+                     'the hub must not have been touched'
+    end
+
     def test_restore_is_a_factory_reset
         @usb.on(1)
         @usb.commit
         @usb.on(:all)
-        @usb.factory_reset
+        @usb.factory_reset(confirm: true)
         assert_empty @hub.ports_on,  'every port dropped'
         assert_empty @hub.flash_ports, 'the power-on state went too'
         assert_equal FakeHub::DEFAULT_PASSWORD, @hub.password

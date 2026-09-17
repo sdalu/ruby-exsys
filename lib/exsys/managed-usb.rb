@@ -287,13 +287,24 @@ class ManagedUSB
 
     # Restore the hub to its factory defaults
     #
+    # Refuses without +confirm: true+.  This is the one operation here
+    # that cannot be undone, and the one a caller is most likely to
+    # reach by misunderstanding, so it asks to be meant.
+    #
     # @note This is destructive, and is not the inverse of {#commit}:
     #   it drops every port and resets the password.  Nothing in the
     #   protocol reloads the flashed state -- the hub applies it at
     #   power-on by itself.  Confirmed against the vendor's own cusba
     #   tool, whose /D issues the same RD command and documents it as
     #   "restore to factory default settings".
-    def factory_reset
+    # @param confirm [Boolean] must be true; the keyword is the point
+    # @raise [ArgumentError] when not confirmed
+    def factory_reset(confirm: false)
+        unless confirm
+            raise ArgumentError,
+                  'factory_reset drops every port and resets the ' \
+                  'password, and nothing undoes it; pass confirm: true'
+        end
         action('RD', @password, secrets: [ @password ]).then { self }
     end
 
