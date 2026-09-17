@@ -34,10 +34,8 @@ group such as `dialout` or `plugdev`, so check `ls -l` on it and add
 yourself to that group rather than reaching for `sudo`.
 
 The hub answers only to its password, `pass` unless it has been
-changed.  Port numbering runs from 1 to 16, which is what the hub's
-state word can address.  A hub will report its own port count through
-`ExSYS::ManagedUSB#port_count`, but that figure is reported rather
-than acted on -- see the Library section.
+changed.  Port numbering starts at 1 and runs to however many ports
+the hub reports having: the gem asks it, rather than assuming sixteen.
 
 
 ## Install
@@ -128,7 +126,7 @@ hub = ExSYS::ManagedUSB.new('/dev/ttyU0', debug: STDERR)
 hub.on(:all).off(4,5,6)
 
 # Toggle each port in turn
-ExSYS::ManagedUSB::PORTS.each do |p|
+hub.ports.each do |p|
     hub.toggle(p)
 end
 
@@ -178,10 +176,15 @@ hub.query       # => { id: "CENTOS", ports: 16, firmware: "v02",
 hub.port_count  # => 16, asked once and remembered
 ~~~
 
-The port count is reported, not acted on: `:all` still covers all
-sixteen ports the state word can address.  The reply's leading digits
-are not understood, so narrowing the range on that reading could leave
-ports powered that a caller believed it had switched off.
+`:all` covers exactly those ports, and a port the hub does not have is
+refused.  The count is read from the same field the vendor's own tool
+reads, checked against it for hubs reporting 4, 8, 16 and 32 ports.
+
+It is asked once and kept for the life of the object, which outlasts
+any one connection -- the serial line is opened per operation, not
+held.  So a hub object is bound to the hub it first asked.  If the
+device is unplugged and another appears under the same name, build a
+new one; nothing in the library can notice the swap.
 
 `hub.factory_reset` issues `RD` and carries the warning above.  It was
 called `restore` up to 0.6; the old name now raises rather than run.

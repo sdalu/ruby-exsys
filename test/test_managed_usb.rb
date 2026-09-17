@@ -171,6 +171,7 @@ class TestManagedUSB < Minitest::Test
     # A real hub answers in upper case; accept either, since the reply
     # is only ever fed to pack('H4'), which does not care.
     def test_a_lower_case_reply_decodes_the_same
+        @usb.port_count              # settle ?Q before garbling every reply
         @hub.garbage = 'c4ffffff'
         assert_equal [ 3, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 ], @usb.get(:on)
         @hub.garbage = 'C4FFFFFF'
@@ -206,6 +207,23 @@ class TestManagedUSB < Minitest::Test
         assert_equal 16, usb.query[:ports]
     end
 
+    # The hub is asked how many ports it has before it is read, not
+    # somewhere in the middle: a trace of any port operation reads the
+    # same way, and an invalid port is refused without touching it.
+    def test_the_query_leads_and_happens_once
+        @usb.on(1)
+        assert_equal %w[?Q GP SP], (@hub.log.map {|c| c[0, 2] })
+
+        @hub.log.clear
+        @usb.off(2)
+        assert_equal %w[GP SP], (@hub.log.map {|c| c[0, 2] })
+    end
+
+    def test_an_invalid_port_is_refused_before_the_hub_is_read
+        assert_raises(ArgumentError) { @usb.on(99) }
+        assert_equal %w[?Q], (@hub.log.map {|c| c[0, 2] })
+    end
+
     def test_port_count_is_asked_once_and_remembered
         3.times { @usb.port_count }
         assert_equal 1, @hub.log.count('?Q')
@@ -213,9 +231,29 @@ class TestManagedUSB < Minitest::Test
 
     # Firmware that does not know ?Q answers an error, and the count
     # falls back to what the state word can address.
-    def test_port_count_falls_back_when_the_hub_will_not_say
-        @hub.ident = nil
+    def test_port_count_falls_back_when_the_hub_refuses_the_query
+        @hub.ident = nil                        # answers E01
         assert_equal ExSYS::ManagedUSB::PORTS.size, @usb.port_count
+        assert_match(/will not answer/, @dbg.string)
+    end
+
+    # A reply that arrives but cannot be read is a different thing from
+    # a refusal, and must not be guessed at: on a wider hub a guess of
+    # sixteen would leave its upper ports untouched while reporting
+    # success.
+    def test_an_unreadable_query_reply_does_not_become_a_guess
+        @hub.ident = 'CENTOS-garbled'
+        assert_raises(ExSYS::ManagedUSB::Error) { @usb.port_count }
+        assert_raises(ExSYS::ManagedUSB::Error) { @usb.on(:all) }
+    end
+
+    # The firmware is whatever follows the count, not a bare number:
+    # a hub reporting v1.02 must not fall back to a guessed count.
+    def test_a_dotted_firmware_version_still_parses
+        @hub.ident = 'CENTOS000532v1.02'
+        assert_equal 32,      @usb.query[:ports]
+        assert_equal 'v1.02', @usb.query[:firmware]
+        assert_equal 32,      @usb.port_count
     end
 
     def test_an_unparseable_query_reply_is_an_error
@@ -224,13 +262,69 @@ class TestManagedUSB < Minitest::Test
         assert_match(/unexpected query reply/, err.message)
     end
 
-    # The count is reported, not acted on: ALL still expands to every
-    # port the 16-bit state word can address, because the leading
-    # digits of the reply are not understood well enough to narrow it.
-    def test_all_does_not_depend_on_the_reported_count
-        @hub.ident = 'CENTOS000504v02'          # a hub claiming 4 ports
+    # ALL means every port the hub says it has.  Confirmed against the
+    # vendor tool, which reads the same field and reports 4, 8, 16 or
+    # 32 ports from it.
+    def test_all_covers_exactly_the_ports_the_hub_reports
+        @hub.ident = 'CENTOS000504v02'          # a hub with 4 ports
         @usb.on(:all)
-        assert_equal ExSYS::ManagedUSB::PORTS, @hub.ports_on
+        assert_equal [ 1, 2, 3, 4 ], @hub.ports_on
+        assert_equal [ 1, 2, 3, 4 ], @usb.ports
+    end
+
+    def test_a_port_the_hub_does_not_have_is_refused
+        @hub.ident = 'CENTOS000504v02'
+        assert_raises(ArgumentError) { @usb.on(5) }
+    end
+
+    ## Hubs that are not sixteen ports ##################################
+
+    # Regression: the state word's upper half was written as a literal
+    # 'ffff' rather than carried back from the read.  On a 16-port hub
+    # those bits are ports that do not exist and it went unnoticed; on
+    # a 32-port hub it powered ports 17..32 on every single operation.
+    def test_a_wider_hub_does_not_have_its_upper_ports_driven
+        UART.hub = wide = FakeHub.new(ports: 32, width: 8)
+        usb = ExSYS::ManagedUSB.new('/dev/null')
+
+        usb.on(1)
+        assert_equal [ 1 ], wide.ports_on
+    end
+
+    def test_a_wider_hub_can_use_all_of_its_ports
+        UART.hub = wide = FakeHub.new(ports: 32, width: 8)
+        usb = ExSYS::ManagedUSB.new('/dev/null')
+
+        assert_equal 32, usb.port_count
+        usb.on(:all)
+        assert_equal (1..32).to_a, wide.ports_on
+        usb.off(20)
+        assert_equal (1..32).to_a - [ 20 ], wide.ports_on
+    end
+
+    def test_a_narrower_hub_reports_only_the_ports_it_has
+        UART.hub = small = FakeHub.new(ports: 4, width: 8)
+        usb = ExSYS::ManagedUSB.new('/dev/null')
+
+        assert_equal [ 1, 2, 3, 4 ], usb.ports
+        usb.on(:all)
+        assert_equal [ 1, 2, 3, 4 ], small.ports_on
+        assert_equal({ 1 => true, 2 => true, 3 => true, 4 => true },
+                     usb.get)
+        assert_raises(ArgumentError) { usb.on(5) }
+    end
+
+    # The ports it does not have read as 1, and must be written back
+    # that way rather than cleared.
+    def test_absent_ports_are_carried_back_untouched
+        UART.hub = small = FakeHub.new(ports: 4, width: 8)
+        usb = ExSYS::ManagedUSB.new('/dev/null')
+
+        usb.on(1)
+        # Little-endian: ports 1..8 in the first byte, so port 1 on with
+        # ports 5..32 absent and reading 1 is F1 FF FF FF.
+        assert_equal 'F1FFFFFF', small.log.last[-8..],
+                     'absent ports written back as read'
     end
 
     ## Factory reset #####################################################
@@ -336,14 +430,16 @@ class TestManagedUSB < Minitest::Test
     # Regression: a read-modify-write used to close the line between the
     # GP and the SP, letting another process slip in between the two.
     def test_read_modify_write_holds_the_line_open
+        @usb.port_count                        # the one-off ?Q, out of the way
+        @hub.log.clear
         @usb.on(1)
-        assert_equal 1, @hub.opens
         assert_equal 2, @hub.log.size          # GP then SP, one session
+        assert_equal %w[GP SP], (@hub.log.map {|c| c[0, 2] })
     end
 
     def test_set_holds_the_line_open_too
         @usb.set({ 1 => true })
-        assert_equal 1, @hub.opens
+        assert_equal 1, @hub.opens             # ?Q, GP and SP all inside it
     end
 
     def test_the_line_is_opened_as_the_hub_expects

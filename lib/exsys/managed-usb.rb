@@ -17,26 +17,32 @@ module ExSYS
 # A frame carries the whole 16-port state, so changing one port is a
 # read-modify-write: GP to read it, then SP to put it back.
 #
-#     ┌────┬──────────┬──────┬──────┐
-#     │ SP │ pass···· │ 0300 │ FFFF │
-#     └─┬──┴────┬─────┴──┬───┴──┬───┘
-#       │       │        │      └─────  port mask, 4 hex, always FFFF
-#       │       │        └────────────  port state, 4 hex, low byte first
-#       │       └─────────────────────  password, 8 chars (· = pad space)
-#       └─────────────────────────────  command, 2 chars
+#     ┌────┬──────────┬──────────┐
+#     │ SP │ pass···· │ 0300FFFF │
+#     └─┬──┴────┬─────┴────┬─────┘
+#       │       │          └───────  port state, low byte first, hub's width
+#       │       └──────────────────  password, 8 chars (· = pad space)
+#       └──────────────────────────  command, 2 chars
 #
 # The fields go out concatenated, with no separator: the frame above
 # is written as "SPpass    0300FFFF\r".
 #
+# The state word is wider than the ports the hub has.  A 16-port unit
+# answers eight hex digits, four bytes, and the ports it does not have
+# read as 1.  A client therefore writes back what it read rather than
+# padding, because on a 32-port hub padding with FFFF is not padding
+# at all: it is a command to power ports 17 to 32.
+#
 # Port n is bit n-1 of the state word, and the word is sent low byte
-# first, so ports 1 and 2 on is 0x0003 and reaches the wire as "0300":
+# first, so ports 1 and 2 on, on a hub whose other ports read 1,
+# reaches the wire as "0300FFFF".  The low half of that:
 #
 #       port  8  7  6  5  4  3  2  1    16 15 14 13 12 11 10  9
 #       bit   0  0  0  0  0  0  1  1     0  0  0  0  0  0  0  0
 #           └───── low byte  03 ───┘   └──── high byte  00 ───┘
 #
-# The mask selects which ports the state word applies to; the library
-# always sends FFFF, i.e. all sixteen.
+# How many ports a hub has is its own to say: ?Q reports it, and
+# {#ports} is that list.
 class ManagedUSB
     SPEED      = 9600                     # @!visibility private
     PASSWORD   = 'pass'.freeze            # @!visibility private
@@ -62,6 +68,12 @@ class ManagedUSB
     class Error < StandardError
     end
 
+    # Raised when the hub refuses a command outright, as older firmware
+    # does for ?Q.  Distinct from {Error} so that a refusal can be
+    # worked around while a reply nobody can read still stops things.
+    class Unsupported < Error
+    end
+
     # Initialize object.
     #
     # @param line     [String]  Serial line
@@ -76,6 +88,7 @@ class ManagedUSB
         @line     = line
         @password = password.ljust(8)
         @debug    = debug
+        @width    = 8         # until the hub says otherwise
     end
 
     # Toggle the given ports
@@ -84,7 +97,12 @@ class ManagedUSB
     #                                one.  An empty list is an error.
     # @param commit   [Boolean] Commit to flash memory
     def toggle(*ports, commit: false)
-        session { _set(_get ^ mask(ports), commit: commit) }
+        session do
+            # The mask first: it settles how many ports the hub
+            # has, and validates the list, before the hub is read.
+            m = mask(ports)
+            _set(_get ^ m, commit: commit)
+        end
     end
 
     # Turn on the given ports
@@ -93,7 +111,12 @@ class ManagedUSB
     #                                one.  An empty list is an error.
     # @param commit   [Boolean] Commit to flash memory
     def on(*ports, commit: false)
-        session { _set(_get | mask(ports), commit: commit) }
+        session do
+            # The mask first: it settles how many ports the hub
+            # has, and validates the list, before the hub is read.
+            m = mask(ports)
+            _set(_get | m, commit: commit)
+        end
     end
 
     # Turn off the given ports
@@ -102,7 +125,12 @@ class ManagedUSB
     #                                one.  An empty list is an error.
     # @param commit   [Boolean] Commit to flash memory
     def off(*ports, commit: false)
-        session { _set(_get & ~mask(ports), commit: commit) }
+        session do
+            # The mask first: it settles how many ports the hub
+            # has, and validates the list, before the hub is read.
+            m = mask(ports)
+            _set(_get & ~ m, commit: commit)
+        end
     end
 
     # Set state for the specified ports
@@ -125,48 +153,14 @@ class ManagedUSB
     # @param default  [Boolean,nil] Default value to use if unspecified
     # @param commit   [Boolean]     Commit to flash memory
     def set(dataset, default = nil, commit: false)
-        # Normalize
-        keys = dataset.keys        
-        if (keys - PORTS).empty?
-            dataset = dataset.transform_values do |v|
-                case v
-                when * TRUE_LIST then true
-                when *FALSE_LIST then false
-                when nil
-                else raise ArgumentError
-                end
-            end
-        elsif (keys - [:on, :off]).empty?
-            on  = Array(dataset[:on ])
-            off = Array(dataset[:off])
-
-            check_ports(on + off)
-
-            unless (on & off).empty?
-                raise ArgumentError, "on/off overlap"
-            end
-            
-            dataset = {}
-            dataset.merge!(on .to_h {|k| [k, true  ] })
-            dataset.merge!(off.to_h {|k| [k, false ] })
-        else
-            raise ArgumentError
-        end
-
-        # Fill unspecified
-        unless default.nil?
-            (PORTS - dataset.keys).each do |k|
-                dataset.merge!(k => default)
-            end
-        end
-
-        # Compute value and apply, holding the line for the whole
-        # read-modify-write so a concurrent process cannot interleave
-        # its own update between the read and the write.
+        # One session for the whole thing: normalising asks the hub how
+        # many ports it has, and that answer must come from the same
+        # held line as the read-modify-write it feeds.
         session do
-            val = _get
+            wanted = normalize(dataset, default)
+            val    = _get
 
-            dataset.compact.each do |k,v|
+            wanted.each do |k, v|
                 flg = 1 << (k-1)
                 if v
                 then val |=  flg
@@ -182,19 +176,22 @@ class ManagedUSB
     #
     # One of the two commands needing no password.  The reply is a
     # single string -- "CENTOS000516v02" on the 16-port model -- made
-    # of an identifier, some digits, and a firmware version.
+    # of an identifier, four digits, the port count, and a firmware
+    # version.  It carries no port states: those come from GP.
     #
-    # @note The port count is read as the two digits before the
-    #   firmware.  That matches the one hub this was checked against
-    #   and the vendor tool's own field order, but the leading digits
-    #   are not understood, so the count is reported rather than
-    #   trusted: it does not decide which ports {ALL} expands to.  See
-    #   {#port_count}.
+    # The count is the two digits before the firmware, which is where
+    # the vendor's own tool reads it, checked against that tool for
+    # hubs reporting 4, 8, 16 and 32.  The four digits before it are
+    # returned in :raw and nowhere else: what they mean is not known,
+    # and the vendor ignores them too.
     #
     # @return [Hash] :id, :ports, :firmware, and the :raw reply
     def query
         raw = action('?Q', check: false)
-        unless raw =~ /\A([A-Z]+)(\d*)(\d{2})(v\d+)\z/
+        if (raw.size == 3) && (raw[0] == 'E')
+            raise Unsupported, "hub refused the query: #{raw[1..-1]}"
+        end
+        unless raw =~ /\A([A-Z]+)(\d*)(\d{2})(v\S*)\z/
             raise Error, "unexpected query reply: #{raw.inspect}"
         end
         { :id => $1, :ports => $3.to_i, :firmware => $4, :raw => raw }
@@ -202,21 +199,54 @@ class ManagedUSB
 
     # Number of ports the hub says it has
     #
-    # Asked once and remembered.  Falls back to the sixteen the state
-    # word can address when the hub will not answer {#query}, which is
-    # also the number every operation uses regardless: see the note on
-    # {#query} for why this is reported and not acted upon.
+    # Asked once, before the first operation needing it, and then
+    # remembered.  This is what {ALL} covers and what a port is checked
+    # against.
+    #
+    # @note Remembered for the life of this object, which outlasts any
+    #   one connection: the line is opened per operation, not held.  So
+    #   an instance is bound to the hub it first asked.  If the device
+    #   is unplugged and another appears under the same name, build a
+    #   new instance rather than reusing this one -- nothing here can
+    #   notice the swap.
+    #
+    # Falls back to {PORTS}.size when the firmware is too old to answer
+    # {#query}.  A reply that arrives but cannot be read raises
+    # instead: guessing low there would leave a wider hub's upper ports
+    # untouched while reporting success.
     #
     # @return [Integer]
     def port_count
         @port_count ||=
             begin
                 n = query[:ports]
-                PORTS.include?(n) ? n : PORTS.size
-            rescue Error
+                # PS64 in the vendor's own symbols: 64 ports is the
+                # most the protocol can express.
+                unless n.between?(1, 64)
+                    raise Error, "hub reports #{n} ports"
+                end
+                n
+            rescue Unsupported
+                # Firmware too old to be asked.  Sixteen is the only
+                # safe guess: it is what the state word addresses on
+                # every hub this gem has been run against.  A reply
+                # that arrives but cannot be read is NOT this case and
+                # is left to raise -- guessing low there would leave a
+                # wider hub's upper ports untouched while reporting
+                # success.
+                @debug&.puts '!!! hub will not answer ?Q, assuming ' \
+                             "#{PORTS.size} ports"
                 PORTS.size
             end
     end
+
+    # The ports this hub has, as a list
+    #
+    # From {#port_count}, so asked of the hub once and bound to this
+    # object for its lifetime.
+    #
+    # @return [Array<Integer>]
+    def ports = 1.upto(port_count).to_a
 
     # Get hub current state for all ports
     #
@@ -229,10 +259,12 @@ class ManagedUSB
     #
     # @param type [:ports, :on_off, :on, :off] Type of returned value
     def get(type = :ports)
-        val = _get
-        h   = PORTS.reduce({}) {|acc, obj|
-             acc.merge(obj => (val & (1 << (obj-1))).positive?)
-        }
+        h = session do
+            v = _get
+            ports.reduce({}) {|acc, obj|
+                acc.merge(obj => (v & (1 << (obj-1))).positive?)
+            }
+        end
 
         case type
         when :ports
@@ -348,27 +380,65 @@ class ManagedUSB
         line.nil? ? store.delete(self) : store[self] = line
     end
 
-    def check_ports(ports)
-        ports.each do |p|
-            unless PORTS.include?(p)
+    # Turn either accepted port-state notation into { port => bool },
+    # with the unlisted ports filled in when a default is given and
+    # dropped when it is not.
+    def normalize(dataset, default)
+        keys = dataset.keys
+        if (keys - ports).empty?
+            dataset = dataset.transform_values do |v|
+                case v
+                when * TRUE_LIST then true
+                when *FALSE_LIST then false
+                when nil
+                else raise ArgumentError
+                end
+            end
+        elsif (keys - [:on, :off]).empty?
+            on  = Array(dataset[:on ])
+            off = Array(dataset[:off])
+
+            check_ports(on + off)
+
+            unless (on & off).empty?
+                raise ArgumentError, "on/off overlap"
+            end
+
+            dataset = on .to_h {|k| [k, true  ] }
+                        .merge(off.to_h {|k| [k, false ] })
+        else
+            raise ArgumentError
+        end
+
+        unless default.nil?
+            (ports - dataset.keys).each {|k| dataset[k] = default }
+        end
+
+        dataset.compact
+    end
+
+    def check_ports(list)
+        known = ports
+        list.each do |p|
+            unless known.include?(p)
                 raise ArgumentError, "invalid port: #{p.inspect}"
             end
         end
     end
     
-    def mask(ports)
+    def mask(list)
         # An empty list is refused rather than taken to mean everything.
         # A caller splatting a computed list cannot say "none": on(*[])
         # and on() are the same call, so the convenience would silently
-        # switch all sixteen whenever the list came back empty.
-        if ports.empty?
+        # switch every port whenever the list came back empty.
+        if list.empty?
             raise ArgumentError,
                   "no port given (#{ALL.inspect} means every port)"
         end
-        ports = PORTS if ports == [ ALL ]
+        list = ports if list == [ ALL ]
 
-        check_ports(ports)
-        ports.reduce(0) {|acc, obj| acc | (1 << (obj-1)) }
+        check_ports(list)
+        list.reduce(0) {|acc, obj| acc | (1 << (obj-1)) }
     end
 
     def _get
@@ -376,16 +446,39 @@ class ManagedUSB
 
         if (data.size == 3) && (data[0] == 'E')
             raise Error, data[1..-1]
-        elsif data.size != 8
+        elsif data.empty? || !data.match?(/\A(?:\h\h)+\z/)
             raise Error, "unexpected reply: #{data.inspect}"
         end
 
-        [ data ].pack('H4').unpack1('v')
+        # The hub sets the width, and keeps it: a 16-port model answers
+        # eight hex digits, four bytes, of which only the low sixteen
+        # bits are ports it has.  Whatever comes back is written back.
+        @width = data.size
+        decode(data)
     end
 
+    # Little-endian byte order, any width.
+    def decode(hex)
+        hex.scan(/\h\h/).each_with_index
+           .sum {|byte, i| byte.to_i(16) << (8 * i) }
+    end
+
+    def encode(v, width)
+        (width / 2).times.map {|i| format('%02X', (v >> (8 * i)) & 0xff) }
+                   .join
+    end
+
+    # Always preceded by a {#_get} in the same session, which is what
+    # fixes the width and carries the bits above the hub's real ports
+    # back untouched.  Those bits read as 1 on a hub that has fewer
+    # ports than its word is wide; writing them back as read is what
+    # keeps a wider hub from having its upper ports driven.
     def _set(v, commit: false)
-        dataset = ([v].pack('v').unpack1('H*') + 'ffff').upcase
-        action(commit ? 'FP' : 'SP', @password, dataset,
+        if (v >> (@width * 4)).positive?
+            raise Error, "hub reports #{port_count} ports but answers a " \
+                         "#{@width * 4}-bit state word"
+        end
+        action(commit ? 'FP' : 'SP', @password, encode(v, @width),
                secrets: [ @password ]).then { self }
     end
 

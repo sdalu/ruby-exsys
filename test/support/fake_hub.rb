@@ -19,7 +19,13 @@ class FakeHub
     # @param delay    [Float]   pause inside a write, widening the
     #                            window a concurrent process could slip
     #                            into
+    # @param ports [Integer] how many ports this hub has
+    # @param width [Integer] hex digits in its state word.  Real hubs
+    #                         answer wider than their port count: a
+    #                         16-port unit answers eight, and the ports
+    #                         it does not have read as 1.
     def initialize(password: DEFAULT_PASSWORD, state: 0x0000,
+                   ports: 16, width: 8,
                    path: nil, lock: nil, delay: 0)
         @password = password
         @state    = state
@@ -34,7 +40,9 @@ class FakeHub
         @lockable = true      # platform allows locking the line
         @garbage  = nil       # hub answers this instead, when set
         @lock_error = nil     # raised by flock; for the propagation test
-        @ident    = 'CENTOS000516v02'   # what ?Q answers; nil = refuse
+        @ports    = ports
+        @width    = width
+        @ident    = format('CENTOS0005%02dv02', ports)  # nil = refuse ?Q
 
         # Attach to the hub the file already describes, so that a test
         # can inspect what its subprocesses did; seed it otherwise.
@@ -60,13 +68,19 @@ class FakeHub
     # Ports currently powered, as a sorted list -- the oracle the tests
     # compare against.
     def ports_on
-        1.upto(16).select {|p| state & (1 << (p-1)) != 0 }
+        1.upto(@ports).select {|p| state & (1 << (p-1)) != 0 }
     end
 
     # The power-on state the hub would come back to.
     def flash_ports
-        1.upto(16).select {|p| flash & (1 << (p-1)) != 0 }
+        1.upto(@ports).select {|p| flash & (1 << (p-1)) != 0 }
     end
+
+    # Bits for ports this hub does not have.  A real one reports them
+    # set, which is why a client must write back what it read.
+    def absent = ((1 << (@width * 4)) - 1) & ~real
+
+    def real = (1 << @ports) - 1
 
     # Record how the line was opened, so a test can check the library
     # asks for the device and the speed the hub actually needs.
@@ -104,7 +118,7 @@ class FakeHub
 
         # GP and ?Q are the two commands the hub answers without a
         # password, both with a bare payload rather than a G/E status.
-        return encode(@state) + 'FFFF' if code == 'GP'
+        return encode(@state | absent)  if code == 'GP'
         return @ident || 'E01'         if code == '?Q'
 
         return 'E01' unless args.start_with?(@password)
@@ -113,8 +127,8 @@ class FakeHub
         sleep @delay if @delay.positive?
 
         case code
-        when 'SP' then @state = decode(rest)             ; 'G'
-        when 'FP' then @state = @flash = decode(rest)    ; 'G'
+        when 'SP' then @state = decode(rest) & real      ; 'G'
+        when 'FP' then @state = @flash = decode(rest) & real ; 'G'
         when 'WP' then @flash = @state                   ; 'G'
         when 'RD' then @state = @flash = 0
                        @password = DEFAULT_PASSWORD            ; 'G'
@@ -124,11 +138,18 @@ class FakeHub
         end
     end
 
-    # Little-endian 16-bit, spelled out rather than packed.  Upper case
-    # because that is what a real hub answers -- observed on an ExSYS
-    # 16-port unit, which replies to GP with e.g. "C4FFFFFF".
-    def encode(v) = format('%02X%02X', v & 0xff, (v >> 8) & 0xff)
-    def decode(s) = s[0, 2].to_i(16) | (s[2, 2].to_i(16) << 8)
+    # Little-endian, any width, spelled out rather than packed.  Upper
+    # case because that is what a real hub answers -- observed on an
+    # ExSYS 16-port unit, which replies to GP with "C4FFFFFF".
+    def encode(v)
+        (@width / 2).times.map {|i| format('%02X', (v >> (8 * i)) & 0xff) }
+                    .join
+    end
+
+    def decode(str)
+        str.scan(/\h\h/).each_with_index
+           .sum {|byte, i| byte.to_i(16) << (8 * i) }
+    end
 
     def load
         return if @path.nil? || !File.exist?(@path)
