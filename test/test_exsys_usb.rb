@@ -50,19 +50,30 @@ class TestExsysUsb < Minitest::Test
         assert_equal [ 3 ], hub.ports_on
     end
 
-    def test_commit_and_restore
+    def test_commit_saves_the_power_on_state
         exsys_usb('on', '1')
         exsys_usb('commit')
         exsys_usb('on', '2')
-        exsys_usb('restore')
-        assert_equal [ 1 ], hub.ports_on
+        assert_equal [ 1, 2 ], hub.ports_on
+        assert_equal [ 1 ],    hub.flash_ports
     end
 
     def test_commit_flag_writes_through
         exsys_usb('-c', 'on', '4')
         exsys_usb('on', '5')
-        exsys_usb('restore')
-        assert_equal [ 4 ], hub.ports_on
+        assert_equal [ 4, 5 ], hub.ports_on
+        assert_equal [ 4 ],    hub.flash_ports
+    end
+
+    # restore issues RD, the hub's factory reset -- not the inverse of
+    # commit.  Nothing in the protocol reloads the flashed state.
+    def test_restore_is_a_factory_reset
+        exsys_usb('on', '1')
+        exsys_usb('commit')
+        _, err, st = exsys_usb('factory-reset')
+        assert_equal 0, st.exitstatus, err
+        assert_empty hub.ports_on
+        assert_empty hub.flash_ports
     end
 
     ## Exit status -- regression.  Every failure used to be printed and
@@ -218,6 +229,16 @@ class TestExsysUsb < Minitest::Test
 
         results.each {|(_, err, st)| assert_equal 0, st.exitstatus, err }
         assert_equal [ 1, 2 ], hub.ports_on
+    end
+
+    # Typing the old name must not silently do nothing, nor quietly do
+    # the reset: it must say what the command actually is.
+    def test_the_old_restore_action_explains_itself
+        _, err, st = exsys_usb('restore')
+        assert_equal 1, st.exitstatus
+        assert_match(/renamed factory-reset/, err)
+        assert_match(/factory defaults/,      err)
+        assert_equal [], hub.ports_on
     end
 
     ## Packaging #########################################################

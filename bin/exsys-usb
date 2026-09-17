@@ -80,8 +80,15 @@ begin
     when 'reset'
         $hub.reset
 
+    when 'factory-reset'
+        $hub.factory_reset
+
+    # A tombstone rather than an alias: anyone typing the old name is
+    # expecting the inverse of commit, which this never was.
     when 'restore'
-        $hub.restore
+        raise 'restore was renamed factory-reset: it restores the hub ' \
+              'to factory defaults, dropping every port and resetting ' \
+              'the password, and is not the inverse of commit'
 
     else
         raise "unknown action: #{action}"

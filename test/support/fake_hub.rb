@@ -8,7 +8,8 @@ class FakeHub
     DEFAULT_PASSWORD = 'pass'.ljust(8)
 
     attr_reader   :log, :opens, :locks, :line, :speed, :mode, :lock_path
-    attr_accessor :password, :silent, :lockable, :garbage, :lock_error
+    attr_accessor :password, :silent, :lockable, :garbage, :lock_error,
+                  :ident
 
     # @param state    [Integer] initial port bitmap
     # @param path     [String]  file backing the state, so that separate
@@ -33,6 +34,7 @@ class FakeHub
         @lockable = true      # platform allows locking the line
         @garbage  = nil       # hub answers this instead, when set
         @lock_error = nil     # raised by flock; for the propagation test
+        @ident    = 'CENTOS000516v02'   # what ?Q answers; nil = refuse
 
         # Attach to the hub the file already describes, so that a test
         # can inspect what its subprocesses did; seed it otherwise.
@@ -59,6 +61,11 @@ class FakeHub
     # compare against.
     def ports_on
         1.upto(16).select {|p| state & (1 << (p-1)) != 0 }
+    end
+
+    # The power-on state the hub would come back to.
+    def flash_ports
+        1.upto(16).select {|p| flash & (1 << (p-1)) != 0 }
     end
 
     # Record how the line was opened, so a test can check the library
@@ -95,9 +102,10 @@ class FakeHub
         code = cmd[0, 2]
         args = cmd[2..].to_s
 
-        # GP is the one command the hub answers unauthenticated, with a
-        # bare 8-digit payload rather than a G/E status.
+        # GP and ?Q are the two commands the hub answers without a
+        # password, both with a bare payload rather than a G/E status.
         return encode(@state) + 'FFFF' if code == 'GP'
+        return @ident || 'E01'         if code == '?Q'
 
         return 'E01' unless args.start_with?(@password)
         rest = args[@password.size..]
@@ -108,7 +116,8 @@ class FakeHub
         when 'SP' then @state = decode(rest)             ; 'G'
         when 'FP' then @state = @flash = decode(rest)    ; 'G'
         when 'WP' then @flash = @state                   ; 'G'
-        when 'RD' then @state = @flash                   ; 'G'
+        when 'RD' then @state = @flash = 0
+                       @password = DEFAULT_PASSWORD            ; 'G'
         when 'RH' then @state = @flash                   ; nil
         when 'CP' then @password = rest                  ; 'G'
         else           'E02'

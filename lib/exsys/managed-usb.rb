@@ -9,10 +9,10 @@ module ExSYS
 # or Exx on error.  GP is the exception: it needs no password, and it
 # answers the port state directly.
 #
-#     GP   read the port state      SP   set it, in RAM
-#     WP   write RAM to flash       FP   set it, in RAM and flash
-#     RD   restore RAM from flash   CP   change the password
-#     RH   reset the hub (no reply)
+#     ?Q   describe the hub           GP   read the port state
+#     SP   set it, in RAM             FP   set it, in RAM and flash
+#     WP   write RAM to flash         CP   change the password
+#     RD   restore factory defaults   RH   reset the hub (no reply)
 #
 # A frame carries the whole 16-port state, so changing one port is a
 # read-modify-write: GP to read it, then SP to put it back.
@@ -178,6 +178,46 @@ class ManagedUSB
         end
     end
 
+    # Ask the hub to describe itself
+    #
+    # One of the two commands needing no password.  The reply is a
+    # single string -- "CENTOS000516v02" on the 16-port model -- made
+    # of an identifier, some digits, and a firmware version.
+    #
+    # @note The port count is read as the two digits before the
+    #   firmware.  That matches the one hub this was checked against
+    #   and the vendor tool's own field order, but the leading digits
+    #   are not understood, so the count is reported rather than
+    #   trusted: it does not decide which ports {ALL} expands to.  See
+    #   {#port_count}.
+    #
+    # @return [Hash] :id, :ports, :firmware, and the :raw reply
+    def query
+        raw = action('?Q', check: false)
+        unless raw =~ /\A([A-Z]+)(\d*)(\d{2})(v\d+)\z/
+            raise Error, "unexpected query reply: #{raw.inspect}"
+        end
+        { :id => $1, :ports => $3.to_i, :firmware => $4, :raw => raw }
+    end
+
+    # Number of ports the hub says it has
+    #
+    # Asked once and remembered.  Falls back to the sixteen the state
+    # word can address when the hub will not answer {#query}, which is
+    # also the number every operation uses regardless: see the note on
+    # {#query} for why this is reported and not acted upon.
+    #
+    # @return [Integer]
+    def port_count
+        @port_count ||=
+            begin
+                n = query[:ports]
+                PORTS.include?(n) ? n : PORTS.size
+            rescue Error
+                PORTS.size
+            end
+    end
+
     # Get hub current state for all ports
     #
     # Return value depend of the asked type (default: ports)
@@ -213,9 +253,28 @@ class ManagedUSB
         end
     end
 
-    # Restore port states from the flash memory
-    def restore
+    # Restore the hub to its factory defaults
+    #
+    # @note This is destructive, and is not the inverse of {#commit}:
+    #   it drops every port and resets the password.  Nothing in the
+    #   protocol reloads the flashed state -- the hub applies it at
+    #   power-on by itself.  Confirmed against the vendor's own cusba
+    #   tool, whose /D issues the same RD command and documents it as
+    #   "restore to factory default settings".
+    def factory_reset
         action('RD', @password, secrets: [ @password ]).then { self }
+    end
+
+    # @deprecated Renamed to {#factory_reset} in 1.0.
+    #
+    # The old name read as the inverse of {#commit}, which it never
+    # was, so it is gone rather than aliased -- a caller holding that
+    # belief needs to be stopped, not quietly forwarded.
+    def restore
+        raise NoMethodError,
+              'restore was renamed factory_reset: RD restores the hub ' \
+              'to factory defaults, dropping every port and resetting ' \
+              'the password.  It is not the inverse of commit.'
     end
 
     # Save the port states to the flash memory

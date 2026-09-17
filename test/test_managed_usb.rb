@@ -183,20 +183,79 @@ class TestManagedUSB < Minitest::Test
 
     ## Flash and reset ###################################################
 
-    def test_commit_saves_and_restore_brings_back
+    def test_commit_saves_the_state_as_the_power_on_state
         @usb.on(1)
         @usb.commit
-        @usb.on(2)
-        assert_equal [ 1, 2 ], @hub.ports_on
-        @usb.restore
-        assert_equal [ 1 ], @hub.ports_on
+        assert_equal [ 1 ], @hub.flash_ports
+    end
+
+    # RD is the hub's "restore factory defaults", not the inverse of
+    # commit: there is no command that reloads the flashed state, the
+    # hub applies it at power-on by itself.  Modelled from the vendor's
+    # own documentation -- running it against hardware would drop every
+    # port on the bench and reset the password.
+    ## Describing the hub ###############################################
+
+    def test_query_reports_id_ports_and_firmware
+        assert_equal({ :id => 'CENTOS', :ports => 16, :firmware => 'v02',
+                       :raw => 'CENTOS000516v02' }, @usb.query)
+    end
+
+    def test_query_needs_no_password
+        usb = ExSYS::ManagedUSB.new('/dev/null', 'wrong')
+        assert_equal 16, usb.query[:ports]
+    end
+
+    def test_port_count_is_asked_once_and_remembered
+        3.times { @usb.port_count }
+        assert_equal 1, @hub.log.count('?Q')
+    end
+
+    # Firmware that does not know ?Q answers an error, and the count
+    # falls back to what the state word can address.
+    def test_port_count_falls_back_when_the_hub_will_not_say
+        @hub.ident = nil
+        assert_equal ExSYS::ManagedUSB::PORTS.size, @usb.port_count
+    end
+
+    def test_an_unparseable_query_reply_is_an_error
+        @hub.ident = 'wat'
+        err = assert_raises(ExSYS::ManagedUSB::Error) { @usb.query }
+        assert_match(/unexpected query reply/, err.message)
+    end
+
+    # The count is reported, not acted on: ALL still expands to every
+    # port the 16-bit state word can address, because the leading
+    # digits of the reply are not understood well enough to narrow it.
+    def test_all_does_not_depend_on_the_reported_count
+        @hub.ident = 'CENTOS000504v02'          # a hub claiming 4 ports
+        @usb.on(:all)
+        assert_equal ExSYS::ManagedUSB::PORTS, @hub.ports_on
+    end
+
+    ## Factory reset #####################################################
+
+    def test_the_old_restore_name_is_a_tombstone
+        err = assert_raises(NoMethodError) { @usb.restore }
+        assert_match(/renamed factory_reset/, err.message)
+        assert_match(/not the inverse of commit/, err.message)
+    end
+
+    def test_restore_is_a_factory_reset
+        @usb.on(1)
+        @usb.commit
+        @usb.on(:all)
+        @usb.factory_reset
+        assert_empty @hub.ports_on,  'every port dropped'
+        assert_empty @hub.flash_ports, 'the power-on state went too'
+        assert_equal FakeHub::DEFAULT_PASSWORD, @hub.password
     end
 
     def test_on_with_commit_writes_through_to_flash
         @usb.on(3, commit: true)
         @usb.on(4)
-        @usb.restore
-        assert_equal [ 3 ], @hub.ports_on
+        assert_equal [ 3, 4 ], @hub.ports_on
+        assert_equal [ 3 ],    @hub.flash_ports
     end
 
     def test_reset_expects_no_reply

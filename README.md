@@ -34,9 +34,10 @@ group such as `dialout` or `plugdev`, so check `ls -l` on it and add
 yourself to that group rather than reaching for `sudo`.
 
 The hub answers only to its password, `pass` unless it has been
-changed.  Port numbering runs from 1 to 16, and that range is fixed:
-this gem targets the 16-port model, so on a smaller hub the commands
-that take no port list would address ports that are not there.
+changed.  Port numbering runs from 1 to 16, which is what the hub's
+state word can address.  A hub will report its own port count through
+`ExSYS::ManagedUSB#port_count`, but that figure is reported rather
+than acted on -- see the Library section.
 
 
 ## Install
@@ -74,8 +75,15 @@ exsys-usb -d ${dev} -c on 1           # Turn on port 1, and save to flash
 | `toggle [PORT...]`  | Invert the listed ports, or every port          |
 | `set PORT:STATE...` | Set the listed ports; `-D` decides the rest     |
 | `commit`            | Save the current port state to flash            |
-| `restore`           | Load the port state back from flash             |
+| `factory-reset`     | Factory reset (see the warning below)           |
 | `reset`             | Reset the hub; port power is *not* maintained   |
+
+> [!WARNING]
+> `factory-reset` is not the inverse of `commit`.  It issues the hub's
+> `RD` command: every port drops and the password goes back to `pass`.
+> Nothing in the protocol reloads a saved state -- the hub applies it
+> at power-on by itself.
+
 
 A port state in `set` is written `PORT:STATE`, where `STATE` is one of
 `1`, `on`, `ON`, `true`, `TRUE`, `t`, `T` or their false counterparts
@@ -160,6 +168,23 @@ hub.session do
     hub.on(1) unless hub.get[1]
 end
 ~~~
+
+The hub will also describe itself, over the same line and without a
+password:
+
+~~~ruby
+hub.query       # => { id: "CENTOS", ports: 16, firmware: "v02",
+                #      raw: "CENTOS000516v02" }
+hub.port_count  # => 16, asked once and remembered
+~~~
+
+The port count is reported, not acted on: `:all` still covers all
+sixteen ports the state word can address.  The reply's leading digits
+are not understood, so narrowing the range on that reading could leave
+ports powered that a caller believed it had switched off.
+
+`hub.factory_reset` issues `RD` and carries the warning above.  It was
+called `restore` up to 0.6; the old name now raises rather than run.
 
 Sessions nest, so the methods above stay correct when called inside
 one, and a session belongs to the thread that opened it: another thread
