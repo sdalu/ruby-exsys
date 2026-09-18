@@ -137,15 +137,15 @@ class ManagedUSB
 
     # Set state for the specified ports
     #
-    # Port specification can have one of the folling format
+    # Port specification can have one of the following format
     #
     # 1. hash of port values: { 1 => :on, 2 => :off, ...}
     # 2. hash of port states: { :on => [1, 3], :off => 4 }
     #
     # In the case 1. the state values can be specified by
-    # 
-    # * True:  1, :on,  :ON,  :true,  :TRUE,  true 
-    # * False: 0, :off, :OFF, :false, :FALSE, false
+    #
+    # * True:  1, :on,  :ON,  :true,  :TRUE,  :t, :T, true
+    # * False: 0, :off, :OFF, :false, :FALSE, :f, :F, false
     #
     # The port states that are not specified will acquire the
     # value specified by the default parameter (nil being the
