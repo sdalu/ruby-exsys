@@ -148,6 +148,35 @@ class TestDiscovery < Minitest::Test
         assert_equal '0x0403', tree['uftdi0'][:'%pnpinfo'][:vendor]
     end
 
+    # '/dev/tty' + '' is /dev/tty -- the caller's own controlling
+    # terminal.  An adapter whose tty is not named yet has no line to
+    # offer, and offering that one would have a caller open the
+    # operator's screen and write hub command frames into it.
+    def test_an_adapter_with_no_tty_yet_is_not_a_candidate
+        t = D::FreeBSD.parse(<<~SYSCTL)
+            dev.uhub.0.%location=
+            dev.uhub.0.%parent=usbus1
+            dev.uftdi.0.%location=bus=1 hubaddr=1 port=2 devaddr=3
+            dev.uftdi.0.%parent=uhub0
+            dev.uftdi.0.%pnpinfo=vendor=0x0403 product=0x6001 sernum="AL03GD7X"
+        SYSCTL
+        assert_nil D::FreeBSD.candidate(t['uftdi0'], t)
+    end
+
+    # A %parent chain that comes back on itself is not a tree.  No
+    # kernel prints one; this parses whatever it is handed, and the
+    # answer without a guard is not a wrong path but a command that
+    # never returns.
+    def test_a_parent_chain_that_loops_terminates
+        t = D::FreeBSD.parse(<<~SYSCTL)
+            dev.uhub.1.%location=bus=1 hubaddr=1 port=1 devaddr=2
+            dev.uhub.1.%parent=uhub2
+            dev.uhub.2.%location=bus=1 hubaddr=2 port=2 devaddr=3
+            dev.uhub.2.%parent=uhub1
+        SYSCTL
+        assert_nil D::FreeBSD.usb_path(t['uhub1'], t)
+    end
+
     def test_nothing_attached_is_an_empty_list_not_an_error
         assert_empty freebsd('')
     end

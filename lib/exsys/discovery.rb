@@ -220,6 +220,13 @@ class ManagedUSB
                 return nil unless pnp.is_a?(Hash)
                 return nil unless pnp[:vendor]  == "0x#{CTRL_VENDOR}" &&
                                   pnp[:product] == "0x#{CTRL_PRODUCT}"
+                # No ttyname, no candidate.  An adapter whose tty is
+                # not named yet has no line to hand anybody, and the
+                # answer this used to give was the WORST one available:
+                # '/dev/tty' + '' is /dev/tty, the caller's own
+                # controlling terminal, which a caller taking it for a
+                # hub would open and write command frames to.
+                return nil if Discovery.nonempty(dev[:ttyname]).nil?
                 { :device   => '/dev/tty' + dev[:ttyname].to_s,
                   :serial   => Discovery.nonempty(pnp[:sernum]),
                   :usb_path => self.usb_path(dev, tree) }
@@ -255,6 +262,7 @@ class ManagedUSB
                 bus    = nil
                 ports  = []
                 rooted = false
+                seen   = {}
                 while dev
                     loc = dev[:'%location']
                     unless loc.is_a?(Hash) && loc[:port]
@@ -263,7 +271,17 @@ class ManagedUSB
                     end
                     bus ||= loc[:bus]
                     ports.unshift(loc[:port])
-                    dev = tree[dev[:'%parent'].to_s]
+                    parent = dev[:'%parent'].to_s
+                    # A tree is what this walks, and a %parent chain
+                    # that returns to a device already on the way up is
+                    # not one.  No kernel prints that, but this parses
+                    # whatever it is handed, and the answer without the
+                    # guard is not a wrong path -- it is an unbounded
+                    # loop, which on a bench tool is a command that
+                    # never returns and never says why.
+                    break if seen[parent]
+                    seen[parent] = true
+                    dev = tree[parent]
                 end
                 return nil unless rooted && bus && !ports.empty?
                 "#{bus}-#{ports.join('.')}"
