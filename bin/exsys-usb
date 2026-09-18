@@ -94,6 +94,30 @@ begin
     when 'status'
         report.call(ARGV.map(&:to_i))
 
+    # Which line to give -d.  Needs no hub and no password: it asks the
+    # HOST what is attached, so it works before anything is known.
+    #
+    # Three columns, "line serial usb-path", '-' for one the host does
+    # not report -- the same one-record-per-line shape as status, for
+    # the same reason.  What is listed is every FT232 on the host,
+    # which is not the same as every hub: see the library documentation
+    # for ExSYS::ManagedUSB.available.
+    when 'discover'
+        found = ExSYS::ManagedUSB.available
+        found.each do |c|
+            puts [ c[:device], c[:serial] || '-',
+                   c[:usb_path] || '-' ].join(' ')
+        end
+        # On stderr, and not as a row: stdout here is a listing meant
+        # to be read by awk, and a sentence in it would be parsed as an
+        # adapter.  An operator still wants to know the command ran and
+        # found nothing, which is what stderr is for.
+        if found.empty?
+            warn "#{parser.program_name}: no FTDI" \
+                 " #{ExSYS::ManagedUSB::CTRL_VENDOR}:" \
+                 "#{ExSYS::ManagedUSB::CTRL_PRODUCT} on this host"
+        end
+
     when 'query'
         q = $hub.query
         puts "id:       #{q[:id]}"

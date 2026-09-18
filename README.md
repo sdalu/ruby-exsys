@@ -33,6 +33,9 @@ You need read and write access to it: the device is usually owned by a
 group such as `dialout` or `plugdev`, so check `ls -l` on it and add
 yourself to that group rather than reaching for `sudo`.
 
+`exsys-usb discover` lists the lines that could be a hub, so you do not
+have to guess which one it is.  See [Finding the hub](#finding-the-hub).
+
 The hub answers only to its password, `pass` unless it has been
 changed.  Port numbering starts at 1 and runs to however many ports
 the hub reports having: the gem asks it, rather than assuming sixteen.
@@ -73,6 +76,7 @@ exsys-usb -d ${dev} -c on 1           # Turn on port 1, and save to flash
 | `toggle [PORT...]`  | Invert the listed ports, or every port          |
 | `set PORT:STATE...` | Set the listed ports; `-D` decides the rest     |
 | `status [PORT...]`  | Report the ports, one `N on` / `N off` per line |
+| `discover`          | List the lines that could be a hub              |
 | `query`             | What the hub says it is: id, ports, firmware    |
 | `commit`            | Save the current port state to flash            |
 | `factory-reset`     | Factory reset; refuses without `--yes`          |
@@ -97,7 +101,8 @@ A port state in `set` is written `PORT:STATE`, where `STATE` is one of
 
 | Option                | Meaning                                       |
 | :-------------------- | :-------------------------------------------- |
-| `-d`, `--device=DEV`  | Serial line to the hub (required)             |
+| `-d`, `--device=DEV`  | Serial line to the hub (required, but see      |
+|                       | `discover`)                                   |
 | `-p`, `--password=STR`| Hub password; defaults to `pass`              |
 | `-c`, `--commit`      | Also write the new state to flash             |
 | `-y`, `--yes`         | Mean a destructive action                     |
@@ -130,6 +135,81 @@ rely on the status:
 ~~~sh
 exsys-usb -d /dev/ttyU0 off 3 || echo "could not switch port 3 off"
 ~~~
+
+
+## Finding the hub
+
+The management side of the hub is an ordinary FTDI FT232, so the host
+can be asked which serial lines are attached and what their serial
+numbers are:
+
+~~~sh
+exsys-usb discover
+~~~
+
+~~~text
+/dev/ttyUSB0 A50285BI 1-1.2.4.4
+/dev/ttyUSB1 -        1-1.3
+~~~
+
+One line per adapter: the device to pass to `-d`, the FT232's own
+serial number, and where it sits in the USB tree.  A `-` is a name this
+host cannot give — an EEPROM carrying no serial, or a topology that
+could not be established.  The same list from Ruby:
+
+~~~ruby
+ExSYS::ManagedUSB.available
+# => [ { :device => "/dev/ttyUSB0", :serial => "A50285BI",
+#        :usb_path => "1-1.2.4.4" },
+#      { :device => "/dev/ttyUSB1", :serial => nil,
+#        :usb_path => "1-1.3" } ]
+~~~
+
+**A candidate is not a hub.**  That FT232 is not an ExSYS part and
+carries no ExSYS id, so this lists every FT232 on the host — a
+USB-serial cable, a debug probe, a second hub — and nothing short of
+opening the line and asking (`?Q`, the `query` action) tells them
+apart.  Opening an unknown line means writing to somebody else's
+device, which is why this reports rather than decides.  A program that
+switches ports should not pick one silently when there is more than
+one: the ports of an unrelated hub exist, accept the frames, and report
+success.
+
+**Write down a serial or a path, not the line.**  The number in
+`/dev/ttyUSB1` is neither the hub's nor the USB device number: it is
+the usbserial (Linux) or ucom (FreeBSD) layer's own index, and it is
+the lowest one free when that adapter is probed.  So it depends on what
+else attached first, and it is reused — unplug whatever holds
+`ttyUSB0` and the next thing to attach takes `ttyUSB0`.  Two hubs can
+swap lines across a reboot, or while the machine is up.
+
+The other two are stable, in different ways, and which one is wanted
+depends on the question:
+
+| Name       | Stays with          | Answers                          |
+| :--------- | :------------------ | :------------------------------- |
+| `:serial`  | the adapter         | "this particular hub"            |
+| `:usb_path`| the socket          | "whatever is plugged in there"   |
+
+Move a hub to another port and its serial goes with it while its path
+changes; swap in a replacement hub and the path is unchanged while the
+serial is not.  For naming one particular hub the serial is the answer.
+The path is for a hub whose EEPROM carries no serial to be named by,
+and for a bench where the socket is the fixed thing.
+
+Both platforms report a path, by different means.  Linux states it, in
+`/sys`.  FreeBSD states nothing of the kind, so it is walked out of the
+sysctl tree: each device's `%location` gives the port it occupies on
+its parent and `%parent` names that parent, so collecting the ports
+from the adapter up to the root hub builds the same shape.  The
+numbering is each host's own, though — FreeBSD counts buses from 0 and
+Linux from 1 — so a path names a socket on the machine that reported
+it and does not travel to another.
+
+Discovery reads `/sys/class/tty` through `udevadm` on Linux and
+`dev.uftdi` through `sysctl` on FreeBSD; any other platform raises
+rather than answering an empty list, an empty list being a claim that
+nothing is attached.
 
 
 ## Library
