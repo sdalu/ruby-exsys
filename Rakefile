@@ -28,7 +28,7 @@ end
 task :default => :test
 
 YARD::Rake::YardocTask.new do |t|
-    t.files         = [ 'lib/**/*.rb', 'ext/ucl.c' ]
+    t.files         = [ 'lib/**/*.rb' ]
     t.options       = [ '-m', 'markdown' ]
     t.stats_options = [ '--list-undoc' ]
 end
