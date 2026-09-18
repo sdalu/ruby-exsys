@@ -61,7 +61,7 @@ dev=/dev/ttyU0
 exsys-usb -d ${dev} on                # All on
 exsys-usb -d ${dev} off               # All off
 exsys-usb -d ${dev} on 1 2            # Only turn on port 1 and 2
-exsys-usb -d ${dev} toggle 3, 5       # Toggle port 3 and 5
+exsys-usb -d ${dev} toggle 3 5        # Toggle port 3 and 5
 exsys-usb -d ${dev} set 3:on 5:off    # Turn on port 3, turn off port 5
 exsys-usb -d ${dev} -D false set 3:on # Turn on port 3, all others off
 exsys-usb -d ${dev} -c on 1           # Turn on port 1, and save to flash
@@ -99,18 +99,18 @@ A port state in `set` is written `PORT:STATE`, where `STATE` is one of
 
 ### Options
 
-| Option                | Meaning                                       |
-| :-------------------- | :-------------------------------------------- |
-| `-d`, `--device=DEV`  | Serial line to the hub (required, but see      |
-|                       | `discover`)                                   |
-| `-p`, `--password=STR`| Hub password; defaults to `pass`              |
-| `-c`, `--commit`      | Also write the new state to flash             |
-| `-y`, `--yes`         | Mean a destructive action                     |
-| `-v`, `--verbose`     | Report the port states after a change         |
-| `-D`, `--default=BOOL`| State for the ports `set` does not name       |
-| `--debug[=FILE]`      | Trace the serial exchange to stderr, or FILE  |
-| `-V`, `--version`     | Print the library version                     |
-| `-h`, `--help`        | Print the usage                               |
+| Option                    | Meaning                                      |
+| :------------------------ | :------------------------------------------- |
+| `-d`, `--device=DEV`      | Serial line to the hub (required, but see    |
+|                           | `discover`)                                  |
+| `-p`, `--password=STRING` | Hub password; defaults to `pass`             |
+| `-c`, `--commit`          | Also write the new state to flash            |
+| `-y`, `--yes`             | Mean a destructive action                    |
+| `-v`, `--[no-]verbose`    | Report the port states after a change        |
+| `-D`, `--default=BOOLEAN` | State for the ports `set` does not name      |
+| `--debug[=FILE]`          | Trace the serial exchange to stderr, or FILE |
+| `-V`, `--version`         | Print the library version                    |
+| `-h`, `--help`            | Print the usage                              |
 
 The debug trace shows every frame sent and received, with the password
 blanked out; when it is written to a file, that file is created
@@ -128,8 +128,8 @@ exsys-usb -d ${dev} -v on 3           # switch, then report
 ### Exit status
 
 `0` when the command was carried out, `1` otherwise -- a malformed
-argument, a port outside 1..16, an unreachable serial line, or a
-command the hub refused.  The error goes to stderr, so a script can
+argument, a port the hub does not have, an unreachable serial line, or
+a command the hub refused.  The error goes to stderr, so a script can
 rely on the status:
 
 ~~~sh
@@ -149,7 +149,7 @@ exsys-usb discover
 
 ~~~text
 /dev/ttyUSB0 A50285BI 1-1.2.4.4
-/dev/ttyUSB1 -        1-1.3
+/dev/ttyUSB1 - 1-1.3
 ~~~
 
 One line per adapter: the device to pass to `-d`, the FT232's own
@@ -207,7 +207,8 @@ Linux from 1 — so a path names a socket on the machine that reported
 it and does not travel to another.
 
 Discovery reads `/sys/class/tty` through `udevadm` on Linux and
-`dev.uftdi` through `sysctl` on FreeBSD; any other platform raises
+`dev.uftdi` with `dev.uhub` -- the adapters and the tree above them --
+through `sysctl` on FreeBSD; any other platform raises
 rather than answering an empty list, an empty list being a claim that
 nothing is attached.
 
@@ -248,8 +249,8 @@ hub.get(:off)     # => [ 2, 4, ... ]
 you say every port.  An empty list is refused rather than read as
 "all": `hub.off(*ports)` with an empty `ports` is the very same call as
 `hub.off`, so a computed list that came back empty would otherwise
-switch all sixteen.  The command line is unaffected -- naming no port
-there still means every port.
+switch every port on the hub.  The command line is unaffected -- naming
+no port there still means every port.
 
 Switching is a read-modify-write, and the library holds the serial
 line -- locked -- across the whole exchange, so two processes driving
