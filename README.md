@@ -287,7 +287,9 @@ new one; nothing in the library can notice the swap.
 above.  The keyword is required: it is the one operation here that
 nothing undoes, and the one most easily reached by misunderstanding.
 It was called `restore` up to 0.6; the old name now raises rather than
-run.
+run.  The hub's password goes back to `pass`, and the object follows it
+there, so it stays usable afterwards -- but a later run of the tool
+against that hub must drop its `-p`.
 
 Sessions nest, so the methods above stay correct when called inside
 one, and a session belongs to the thread that opened it: another thread

@@ -48,6 +48,8 @@ class ManagedUSB
     PASSWORD   = 'pass'.freeze            # @!visibility private
     PORTS      = 1.upto(16).to_a.freeze   # @!visibility private
     ALL        = :all                     # every port, said explicitly
+    # The shapes {#get} will answer in; see it for what each one is.
+    TYPES      = [ :ports, :on_off, :on, :off ].freeze
     TRUE_LIST  = [ 1, :on,  :ON,  :true,  :TRUE,  :t, :T, true  ].freeze # @!visibility private
     FALSE_LIST = [ 0, :off, :OFF, :false, :FALSE, :f, :F, false ].freeze # @!visibility private
 
@@ -258,7 +260,16 @@ class ManagedUSB
     # * off   : [ 1, 2, 3, ... ]
     #
     # @param type [:ports, :on_off, :on, :off] Type of returned value
+    # @raise [ArgumentError] for a type outside {TYPES}
     def get(type = :ports)
+        # Checked before the line is opened.  An unknown type is a
+        # caller's typo and nothing the hub can answer, so spending a
+        # GP and a ?Q on it before saying so helps nobody.
+        unless TYPES.include?(type)
+            raise ArgumentError, "unknown type: #{type.inspect} " \
+                                 "(expected one of #{TYPES.inspect})"
+        end
+
         h = session do
             v = _get
             ports.reduce({}) {|acc, obj|
@@ -281,7 +292,10 @@ class ManagedUSB
         when :off
             h.reject {|_,v| v }.keys
         else
-            raise ArgumentError
+            # Unreachable: TYPES is checked on the way in.  Here so
+            # that a type added to that list and not to this case says
+            # so, rather than answering nil.
+            raise Error, "no reader for #{type.inspect}"
         end
     end
 
@@ -297,6 +311,8 @@ class ManagedUSB
     #   power-on by itself.  Confirmed against the vendor's own cusba
     #   tool, whose /D issues the same RD command and documents it as
     #   "restore to factory default settings".
+    # @note The password this object holds follows the hub's back to
+    #   {PASSWORD}, so it stays usable afterwards.
     # @param confirm [Boolean] must be true; the keyword is the point
     # @raise [ArgumentError] when not confirmed
     def factory_reset(confirm: false)
@@ -305,7 +321,15 @@ class ManagedUSB
                   'factory_reset drops every port and resets the ' \
                   'password, and nothing undoes it; pass confirm: true'
         end
-        action('RD', @password, secrets: [ @password ]).then { self }
+        action('RD', @password, secrets: [ @password ])
+        # RD puts the hub's password back to the default, so the one
+        # this object was holding is now the wrong one.  Forgetting it
+        # here is what keeps the NEXT command from being refused by a
+        # hub that did exactly what it was told: without this, every
+        # later call on a hub that had a password raises E01, and
+        # nothing on the wire says why.
+        @password = PASSWORD.ljust(8)
+        self
     end
 
     # @deprecated Renamed to {#factory_reset} in 1.0.
@@ -407,13 +431,18 @@ class ManagedUSB
     def normalize(dataset, default)
         keys = dataset.keys
         if (keys - ports).empty?
-            dataset = dataset.transform_values do |v|
-                case v
-                when * TRUE_LIST then true
-                when *FALSE_LIST then false
-                when nil
-                else raise ArgumentError
-                end
+            # to_h rather than transform_values, so that a value that
+            # is not a state can name the port it was given for: with
+            # sixteen of them, the offending value alone is not enough
+            # to find the typo by.
+            dataset = dataset.to_h do |k, v|
+                [ k, case v
+                     when * TRUE_LIST then true
+                     when *FALSE_LIST then false
+                     when nil
+                     else raise ArgumentError,
+                                "not a port state: #{k} => #{v.inspect}"
+                     end ]
             end
         elsif (keys - [:on, :off]).empty?
             on  = Array(dataset[:on ])
@@ -428,7 +457,9 @@ class ManagedUSB
             dataset = on .to_h {|k| [k, true  ] }
                         .merge(off.to_h {|k| [k, false ] })
         else
-            raise ArgumentError
+            raise ArgumentError,
+                  'dataset is neither { port => state } nor ' \
+                  "{ :on/:off => ports }: #{keys.inspect}"
         end
 
         unless default.nil?
@@ -537,7 +568,20 @@ class ManagedUSB
                 (serial.gets("\n") || '').chomp.tap do |data|
                     @debug&.puts "--> #{data}"
                     if check && data[0] != 'G'
-                        raise Error, data[1..-1]
+                        # Exx is the hub saying no, and xx is what it
+                        # said.  Anything else is NOT a code, and must
+                        # not be reported as one: data[1..-1] of ''
+                        # -- which is what a silent hub and a timed-out
+                        # read both look like -- is nil, and an Error
+                        # raised with nil carries the class name as its
+                        # message and nothing else.  Of a one-character
+                        # reply it is '', an error with no message at
+                        # all.  Either way the operator is told the
+                        # command failed and not one thing more, at
+                        # exactly the moment the line went quiet.
+                        code = data.match(/\AE(\S+)\z/)
+                        raise Error, code ? code[1]
+                                     : "unexpected reply: #{data.inspect}"
                     end
                 end
             end

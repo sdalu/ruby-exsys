@@ -134,10 +134,25 @@ class TestManagedUSB < Minitest::Test
         assert_match(/overlap/, err.message)
     end
 
+    # Each refusal names what it refused.  These used to be bare
+    # ArgumentErrors, whose message was the class name and which left a
+    # caller with sixteen ports to find the typo among by hand.
     def test_set_refuses_a_mixed_or_unknown_notation
-        assert_raises(ArgumentError) { @usb.set({ :on => [ 1 ], 2 => :off }) }
-        assert_raises(ArgumentError) { @usb.set({ :bogus => [ 1 ] })        }
-        assert_raises(ArgumentError) { @usb.set({ 1 => :perhaps })          }
+        err = assert_raises(ArgumentError) {
+            @usb.set({ :on => [ 1 ], 2 => :off })
+        }
+        assert_match(/neither/, err.message)
+        assert_match(/:on/,     err.message)
+
+        err = assert_raises(ArgumentError) { @usb.set({ :bogus => [ 1 ] }) }
+        assert_match(/:bogus/, err.message)
+
+        err = assert_raises(ArgumentError) {
+            @usb.set({ 1 => true, 7 => :perhaps })
+        }
+        assert_match(/not a port state/, err.message)
+        assert_match(/7/,                err.message)
+        assert_match(/:perhaps/,         err.message)
     end
 
     ## get ###############################################################
@@ -178,8 +193,17 @@ class TestManagedUSB < Minitest::Test
         assert_equal [ 3, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 ], @usb.get(:on)
     end
 
+    # Refused by name, and before the line is opened: an unknown type
+    # is a typo and nothing the hub can answer, so it used to cost a GP
+    # and a ?Q and then raise a bare ArgumentError whose message was
+    # the class name.
     def test_get_refuses_an_unknown_type
-        assert_raises(ArgumentError) { @usb.get(:bogus) }
+        @usb.port_count                  # the one-off ?Q, out of the way
+        @hub.log.clear
+        err = assert_raises(ArgumentError) { @usb.get(:bogus) }
+        assert_match(/unknown type/, err.message)
+        assert_match(/:bogus/,       err.message)
+        assert_empty @hub.log, 'a typo must not reach the hub'
     end
 
     ## Flash and reset ###################################################
@@ -353,6 +377,24 @@ class TestManagedUSB < Minitest::Test
         assert_equal FakeHub::DEFAULT_PASSWORD, @hub.password
     end
 
+    # Regression: RD puts the hub's password back to the default, and
+    # this object went on holding the old one.  Every later command was
+    # then refused by the hub that had just done what it was told --
+    # E01, with nothing on the wire saying why.  Only reachable on a hub
+    # whose password is NOT the default, which is why the test above,
+    # running on a default-password hub, could not see it.
+    def test_factory_reset_forgets_the_password_the_hub_dropped
+        UART.hub = hub = FakeHub.new(password: 's3cret'.ljust(8))
+        usb      = ExSYS::ManagedUSB.new('/dev/null', 's3cret')
+
+        usb.factory_reset(confirm: true)
+        usb.on(2)
+
+        assert_equal [ 2 ], hub.ports_on
+        assert_equal 'SPpass    0200FFFF', hub.log.last,
+                     'the frame must carry the password the hub now has'
+    end
+
     def test_on_with_commit_writes_through_to_flash
         @usb.on(3, commit: true)
         @usb.on(4)
@@ -438,6 +480,38 @@ class TestManagedUSB < Minitest::Test
     def test_silent_hub_is_an_error_not_a_hang
         @hub.silent = true
         assert_raises(ExSYS::ManagedUSB::Error) { @usb.get }
+    end
+
+    # Regression, and the same defect as the one above on the other
+    # path: a command whose reply is CHECKED -- commit, reset,
+    # factory_reset, password, and the SP behind every switch -- read
+    # the reply as an Exx code without first establishing it was one.
+    # data[1..-1] of '' is nil, and an Error raised with nil carries the
+    # class name as its message: a silent hub, which is also what a
+    # timed-out read looks like, reported itself as
+    # 'exsys-usb: ExSYS::ManagedUSB::Error' and nothing more.
+    def test_a_silent_hub_says_so_on_a_checked_command
+        @hub.silent = true
+        err = assert_raises(ExSYS::ManagedUSB::Error) { @usb.commit }
+        assert_match(/unexpected reply/, err.message)
+    end
+
+    # ... and of a one-character reply it is '', an error with no
+    # message at all.  Anything that is not an Exx is reported as what
+    # arrived, not as a code the hub never sent.
+    def test_a_reply_too_short_to_be_a_code_is_not_read_as_one
+        @hub.garbage = 'X'
+        err = assert_raises(ExSYS::ManagedUSB::Error) { @usb.commit }
+        assert_match(/unexpected reply/, err.message)
+        assert_match(/"X"/,              err.message)
+    end
+
+    # The Exx path itself still answers with the code alone, which is
+    # what the wrong-password test above reads.
+    def test_a_refusal_on_a_checked_command_is_still_just_its_code
+        @hub.garbage = 'E42'
+        err = assert_raises(ExSYS::ManagedUSB::Error) { @usb.commit }
+        assert_equal '42', err.message
     end
 
     ## The serial line ###################################################
